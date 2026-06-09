@@ -1,0 +1,128 @@
+# Release pipeline for Dominator. Fires on version tags. `build` (see build.yml)
+# is the exact same jobs ci.yml uses for every PR, so a tag never ships something
+# PRs never validated. prepare/publish are release.yml-only.
+# Logic lives in .github/scripts/release/; this file is orchestration only.
+#
+# Required variables (Settings -> Variables -> Actions):
+#   PUBLISH_TARGETS  -- comma-separated destinations, e.g. "github,jfrog"
+#   JFROG_REPO       -- required if publishing to jfrog
+# Required secrets: JF_URL, JF_ACCESS_TOKEN (required if publishing to jfrog)
+#
+# A release must build reproducibly from exactly what's in the tag, so this
+# pipeline never fabricates a go.work -- a committed one is used as-is (Go picks
+# it up automatically), and testing against an unmerged dependency branch is a
+# go.mod pseudo-version in the PR (`go get module@branch`), not CI automation --
+# see https://go.dev/ref/mod (workspaces: "CI systems should generally not be
+# allowed to use the go.work file").
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]*.[0-9]*.[0-9]*']
+  workflow_dispatch:
+    inputs:
+      publish_targets:
+        description: 'Comma-separated destinations (e.g. github,jfrog); blank = use PUBLISH_TARGETS repo var'
+        type: string
+        default: ''
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false  # never cancel a release build mid-flight
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    uses: ./.github/workflows/build.yml
+
+  prepare:
+    needs: build
+    # ref_type == 'tag' guards workflow_dispatch against an accidental branch run.
+    if: (vars.PUBLISH_TARGETS != '' || inputs.publish_targets != '') && github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      id-token: write      # both required by attest-build-provenance's Sigstore signing
+      attestations: write
+    outputs:
+      destinations: ${{ steps.dest.outputs.destinations }}
+      version: ${{ steps.dest.outputs.version }}
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: dominator-build-* # not dominator-* -- that also matches this job's own dominator-dist output
+          path: dist
+          merge-multiple: true  # binaries are platform-suffixed; BUILD_INFO is identical on both legs
+
+      - name: Stamp version into filenames
+        env:
+          VERSION: ${{ github.ref_name }}
+        run: .github/scripts/release/run.sh stamp-version
+
+      - name: Checksums
+        run: .github/scripts/release/run.sh checksums
+
+      - name: Resolve & validate destinations
+        id: dest
+        env:
+          RAW_TARGETS: ${{ inputs.publish_targets || vars.PUBLISH_TARGETS }}
+          VERSION: ${{ github.ref_name }}
+        run: .github/scripts/release/run.sh resolve-destinations
+
+      # Signed once here, before the fan-out, so every destination traces to the same build.
+      - name: Attest build provenance
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: 'dist/**/*' # one broad glob -- combined globs can silently drop matches (#133)
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: dominator-dist
+          path: dist/
+          if-no-files-found: error
+
+  publish:
+    needs: prepare
+    if: needs.prepare.outputs.destinations != '[]'
+    strategy:
+      fail-fast: false
+      matrix:
+        destination: ${{ fromJson(needs.prepare.outputs.destinations) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: release  # waits for manual approval; add reviewers to this environment
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: dominator-dist
+          path: dist
+
+      - name: Publish to GitHub Release
+        if: matrix.destination == 'github'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: .github/scripts/release/run.sh publish-github
+
+      - name: Setup JFrog CLI
+        if: matrix.destination == 'jfrog'
+        uses: jfrog/setup-jfrog-cli@5a4fbe1e30dbb570cc62d2513421c4b9bc3c9959 # v4
+        env:
+          JF_URL: ${{ secrets.JF_URL }}
+          JF_ACCESS_TOKEN: ${{ secrets.JF_ACCESS_TOKEN }}
+
+      - name: Publish to JFrog Artifactory
+        if: matrix.destination == 'jfrog'
+        env:
+          JFROG_REPO: ${{ vars.JFROG_REPO }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+        run: .github/scripts/release/run.sh publish-jfrog
