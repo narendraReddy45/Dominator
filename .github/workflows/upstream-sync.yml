@@ -49,6 +49,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Verify scripts
+        run: ls -la .github/scripts/upstream_sync/
+
       - name: Install Python dependencies
         run: pip install -r .github/scripts/requirements.txt --quiet
 
