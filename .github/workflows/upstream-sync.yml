@@ -10,8 +10,8 @@
 name: Sync Upstream
 
 on:
-  schedule:
-    - cron: '0 6 * * *'   # Daily at 06:00 UTC — adjust to preference
+  push:
+    branches: upstream_fork_sync_1
   workflow_dispatch:
     inputs:
       dry_run:
