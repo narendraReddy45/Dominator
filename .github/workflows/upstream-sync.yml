@@ -24,12 +24,13 @@ on:
         default: false
 
 env:
-  UPSTREAM_REPO:   https://github.com/Cloud-Foundations/Dominator.git
-  UPSTREAM_BRANCH: master
-  BASE_BRANCH:     master
-  SYNC_BRANCH:     chore/sync-upstream
-  PYTHONPATH:      .github/scripts
-  GH_REPO:         ${{ github.repository }}
+  UPSTREAM_REPO:     https://github.com/Cloud-Foundations/Dominator.git
+  UPSTREAM_BRANCH:   master
+  BASE_BRANCH:       master
+  SYNC_BRANCH:       chore/sync-upstream
+  PYTHONPATH:        .github/scripts
+  GH_REPO:           ${{ github.repository }}
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
 
 concurrency:
   group: upstream-sync
@@ -113,7 +114,7 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
       - name: Build Slack payload
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != '' && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != '' && env.SLACK_WEBHOOK_URL != ''
         env:
           PR_ACTION:    ${{ steps.pr.outputs.pr_action }}
           HAS_CONFLICTS: ${{ steps.conflicts.outputs.has_conflicts }}
@@ -148,7 +149,7 @@ jobs:
             }' > /tmp/slack_payload.json
 
       - name: Notify Slack
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != '' && secrets.SLACK_WEBHOOK_URL != ''
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != '' && env.SLACK_WEBHOOK_URL != ''
         uses: slackapi/slack-github-action@v2
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
