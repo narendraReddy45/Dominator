@@ -23,19 +23,21 @@ jobs:
 
     # Only fire for merged (not just closed) PRs that carry the upstream-sync label.
     if: >-
+      vars.UPSTREAM_SYNC_ENABLED == 'true' &&
       github.event.pull_request.merged == true &&
       contains(github.event.pull_request.labels.*.name, 'upstream-sync') &&
       env.SLACK_WEBHOOK_URL != ''
 
     steps:
       - name: Notify Slack — upstream sync merged
-        uses: slackapi/slack-github-action@v2
+        if: env.SLACK_WEBHOOK_URL != ''
+        uses: slackapi/slack-github-action@b0fa283ad8fea605de13dc3f449259339835fc52  # v2.1.0
         with:
           webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
           webhook-type: incoming-webhook
           payload: |
             {
-              "text": "Upstream sync PR #${{ github.event.pull_request.number }} merged into PureStorage/Dominator master",
+              "text": "Upstream sync PR #${{ github.event.pull_request.number }} merged into ${{ github.repository }} master",
               "blocks": [
                 {
                   "type": "header",

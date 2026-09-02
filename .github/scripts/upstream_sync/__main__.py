@@ -1,16 +1,16 @@
 import sys
 
-from .git_ops    import check, detect_conflicts
+from .git_ops import check, detect_conflicts
 from .github_ops import ensure_labels, upsert_pr
-from .report     import build_pr_body, write_summary
+from .report import build_pr_body, write_summary
 
 COMMANDS = {
-    "check":            check,
+    "check": check,
     "detect-conflicts": detect_conflicts,
-    "build-pr-body":    build_pr_body,
-    "ensure-labels":    ensure_labels,
-    "upsert-pr":        upsert_pr,
-    "write-summary":    write_summary,
+    "build-pr-body": build_pr_body,
+    "ensure-labels": ensure_labels,
+    "upsert-pr": upsert_pr,
+    "write-summary": write_summary,
 }
 
 if __name__ == "__main__":

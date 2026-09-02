@@ -4,13 +4,13 @@
 
 {% if not is_ff %}
 > [!WARNING]
-> Upstream history may have been rewritten (non-fast-forward). Verify the commit list carefully before merging.
+> Fork's master has diverged from upstream. This PR will create a merge commit rather than a fast-forward. Verify the commit list carefully before merging.
 
 {% endif %}
 | | |
 |---|---|
-| **Source** | [`Cloud-Foundations/Dominator`](https://github.com/Cloud-Foundations/Dominator) `master` |
-| **Target** | `PureStorage/Dominator` `master` |
+| **Source** | [`{{ upstream_repo }}`]({{ upstream_repo_url }}) `master` |
+| **Target** | `{{ target_repo }}` `master` |
 | **New commits** | {{ commit_count }} |
 | **Date range**  | {{ oldest_date }} to {{ newest_date }} |
 | **Changes**     | {{ diffstat }} |
@@ -39,8 +39,10 @@ These files have merge conflicts and must be resolved manually before this PR ca
 
 ```bash
 git fetch origin
-git checkout -b resolve-upstream-conflicts origin/{{ sync_branch }}
-# Resolve each conflicting file, then:
+git checkout -b resolve-upstream-conflicts origin/master
+git merge origin/{{ sync_branch }}
+# Conflict markers will appear in the files listed above.
+# Resolve each file, then:
 git add <resolved-file> ...
 git commit -m "chore: resolve upstream sync conflicts"
 git push origin resolve-upstream-conflicts
