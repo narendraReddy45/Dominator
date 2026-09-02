@@ -6,14 +6,31 @@ class _Base(BaseSettings):
 
 
 class Settings(_Base):
+    upstream_repo: str = ""  # full URL, e.g. https://github.com/Cloud-Foundations/Dominator.git
     upstream_branch: str = "master"
-    sync_branch: str     = "chore/sync-upstream"
-    base_branch: str     = "master"
+    sync_branch: str = "chore/sync-upstream"
+    base_branch: str = "master"
     github_repository: str = ""
 
     @property
     def upstream_ref(self) -> str:
         return f"upstream/{self.upstream_branch}"
+
+    @property
+    def origin_base_ref(self) -> str:
+        return f"origin/{self.base_branch}"
+
+    @property
+    def upstream_repo_name(self) -> str:
+        if not self.upstream_repo:
+            return "upstream"
+        url = self.upstream_repo.rstrip("/").removesuffix(".git")
+        parts = url.replace(":", "/").split("/")
+        return f"{parts[-2]}/{parts[-1]}"
+
+    @property
+    def upstream_repo_url(self) -> str:
+        return self.upstream_repo.rstrip("/").removesuffix(".git")
 
 
 class CheckSettings(_Base):
@@ -21,31 +38,32 @@ class CheckSettings(_Base):
 
 
 class PrBodySettings(_Base):
-    has_conflicts: bool  = False
-    is_ff: bool          = True
-    conflict_files: str  = ""
-    conflict_count: int  = 0
-    commit_count: str    = "?"
-    oldest_date: str     = ""
-    newest_date: str     = ""
-    diffstat: str        = ""
-    event_name: str      = ""
-    run_number: str      = ""
-    run_url: str         = ""
+    has_conflicts: bool = False
+    is_ff: bool = True
+    conflict_files: str = ""
+    conflict_count: int = 0
+    commit_count: str = "?"
+    oldest_date: str = ""
+    newest_date: str = ""
+    diffstat: str = ""
+    event_name: str = ""
+    run_number: str = ""
+    run_url: str = ""
 
 
 class UpsertPrSettings(_Base):
     has_conflicts: bool = False
-    commit_count: str   = "?"
-    oldest_date: str    = ""
-    newest_date: str    = ""
+    commit_count: str = "?"
+    oldest_date: str = ""
+    newest_date: str = ""
+    prev_sha: str = ""
 
 
 class SummarySettings(_Base):
-    skip: bool          = False
-    dry_run: bool       = False
+    skip: bool = False
+    dry_run: bool = False
     has_conflicts: bool = False
-    commit_count: str   = "0"
-    diffstat: str       = ""
-    pr_url: str         = ""
-    pr_action: str      = ""
+    commit_count: str = ""  # "" = check step never ran; "0" = ran and found nothing
+    diffstat: str = ""
+    pr_url: str = ""
+    pr_action: str = ""
