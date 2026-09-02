@@ -8,9 +8,9 @@ from .utils import PR_BODY_FILE, append_summary
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
-def _commit_table(upstream_ref: str) -> str:
+def _commit_table(base_ref: str, upstream_ref: str) -> str:
     result = subprocess.run(
-        ["git", "log", f"HEAD..{upstream_ref}",
+        ["git", "log", f"{base_ref}..{upstream_ref}",
          "--pretty=format:| `%h` | %s | %an | %ad |", "--date=short"],
         capture_output=True, text=True, encoding="utf-8",
     )
@@ -52,7 +52,7 @@ def build_pr_body() -> None:
         run_number     = inputs.run_number,
         run_url        = inputs.run_url,
         sync_branch    = cfg.sync_branch,
-        commit_table   = _commit_table(cfg.upstream_ref),
+        commit_table   = _commit_table(cfg.origin_base_ref, cfg.upstream_ref),
     ), encoding="utf-8")
 
 

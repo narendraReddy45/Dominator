@@ -5,7 +5,7 @@ from .utils import git, git_rc, set_output, append_summary
 def check() -> None:
     cfg    = Settings()
     inputs = CheckSettings()
-    ref    = f"HEAD..{cfg.upstream_ref}"
+    ref    = f"{cfg.origin_base_ref}..{cfg.upstream_ref}"
     count  = int(git("rev-list", ref, "--count"))
 
     if count == 0 and not inputs.force_sync:
@@ -18,7 +18,7 @@ def check() -> None:
         )
         return
 
-    lines    = git("diff", "--stat", "HEAD", cfg.upstream_ref).splitlines()
+    lines    = git("diff", "--stat", cfg.origin_base_ref, cfg.upstream_ref).splitlines()
     diffstat = lines[-1] if lines else "no file changes"
     dates    = git("log", ref, "--format=%ad", "--date=short").splitlines()
 
@@ -32,9 +32,9 @@ def check() -> None:
 def detect_conflicts() -> None:
     cfg = Settings()
     try:
-        git("checkout", "-B", "_conflict_check", cfg.base_branch, "--quiet")
+        git("checkout", "-B", "_conflict_check", cfg.origin_base_ref, "--quiet")
 
-        is_ff = git_rc("merge-base", "--is-ancestor", "HEAD", cfg.upstream_ref) == 0
+        is_ff = git_rc("merge-base", "--is-ancestor", cfg.origin_base_ref, cfg.upstream_ref) == 0
         set_output("fast_forward", "true" if is_ff else "false")
         if not is_ff:
             print("::warning::Upstream may have rewritten history (non-fast-forward).")
@@ -53,6 +53,6 @@ def detect_conflicts() -> None:
             set_output("conflict_files", "\n".join(files))
 
     finally:
-        git("merge",    "--abort",                  check=False)
-        git("checkout", cfg.base_branch, "--quiet", check=False)
-        git("branch",   "-D", "_conflict_check",    check=False)
+        git("merge",    "--abort",                          check=False)
+        git("checkout", "--detach", cfg.origin_base_ref,   check=False)
+        git("branch",   "-D", "_conflict_check",            check=False)

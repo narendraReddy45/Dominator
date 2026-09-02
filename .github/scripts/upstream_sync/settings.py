@@ -15,6 +15,10 @@ class Settings(_Base):
     def upstream_ref(self) -> str:
         return f"upstream/{self.upstream_branch}"
 
+    @property
+    def origin_base_ref(self) -> str:
+        return f"origin/{self.base_branch}"
+
 
 class CheckSettings(_Base):
     force_sync: bool = False
