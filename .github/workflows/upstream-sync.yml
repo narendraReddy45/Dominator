@@ -91,9 +91,7 @@ jobs:
 
       - name: Push sync branch
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
-        run: |
-          git checkout -B "$SYNC_BRANCH" "upstream/$UPSTREAM_BRANCH" --quiet
-          git push origin "$SYNC_BRANCH" --force --quiet
+        run: git push origin "upstream/$UPSTREAM_BRANCH:refs/heads/$SYNC_BRANCH" --force --quiet
 
       - name: Ensure labels exist
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
