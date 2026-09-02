@@ -16,4 +16,7 @@ COMMANDS = {
 if __name__ == "__main__":
     if len(sys.argv) < 2 or sys.argv[1] not in COMMANDS:
         sys.exit(f"usage: python3 -m upstream_sync <{'|'.join(COMMANDS)}>")
-    COMMANDS[sys.argv[1]]()
+    try:
+        COMMANDS[sys.argv[1]]()
+    except RuntimeError as exc:
+        sys.exit(str(exc))

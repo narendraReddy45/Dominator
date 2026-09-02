@@ -50,7 +50,7 @@ class SummarySettings(_Base):
     skip: bool          = False
     dry_run: bool       = False
     has_conflicts: bool = False
-    commit_count: str   = "0"
+    commit_count: str   = ""   # "" = check step never ran; "0" = ran and found nothing
     diffstat: str       = ""
     pr_url: str         = ""
     pr_action: str      = ""

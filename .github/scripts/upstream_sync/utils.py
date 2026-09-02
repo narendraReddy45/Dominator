@@ -1,6 +1,5 @@
 import os
 import subprocess
-import sys
 from pathlib import Path
 
 PR_BODY_FILE = Path("/tmp/pr_body.md")
@@ -9,7 +8,7 @@ PR_BODY_FILE = Path("/tmp/pr_body.md")
 def _run_cmd(cmd: list[str], check: bool, cwd: str | None = None) -> str:
     result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
     if check and result.returncode != 0:
-        sys.exit(f"{cmd[0]} {' '.join(cmd[1:])} failed: {result.stderr.strip()}")
+        raise RuntimeError(f"{cmd[0]} {' '.join(cmd[1:])} failed: {result.stderr.strip()}")
     return result.stdout.strip()
 
 

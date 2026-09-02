@@ -39,15 +39,15 @@ These files have merge conflicts and must be resolved manually before this PR ca
 
 ```bash
 git fetch origin
-git checkout master
-git merge origin/{{ sync_branch }}
+git checkout -b resolve-upstream-conflicts origin/{{ sync_branch }}
 # Resolve each conflicting file, then:
 git add <resolved-file> ...
 git commit -m "chore: resolve upstream sync conflicts"
-git push origin master
+git push origin resolve-upstream-conflicts
 ```
 
-Once all conflicts are resolved and pushed to `master`, close this draft PR.
+Open a PR from `resolve-upstream-conflicts` into `master` and merge that instead.
+Close this draft PR once the resolution PR is merged.
 </details>
 
 ---

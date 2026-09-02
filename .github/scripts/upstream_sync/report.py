@@ -1,20 +1,17 @@
-import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .settings import Settings, PrBodySettings, SummarySettings
-from .utils import PR_BODY_FILE, append_summary
+from .utils import PR_BODY_FILE, append_summary, git
 
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
 def _commit_table(base_ref: str, upstream_ref: str) -> str:
-    result = subprocess.run(
-        ["git", "log", f"{base_ref}..{upstream_ref}",
-         "--pretty=format:| `%h` | %s | %an | %ad |", "--date=short"],
-        capture_output=True, text=True, encoding="utf-8",
-    )
-    return result.stdout.rstrip("\n")
+    return git(
+        "log", f"{base_ref}..{upstream_ref}",
+        "--pretty=format:| `%h` | %s | %an | %ad |", "--date=short",
+    ).rstrip("\n")
 
 
 def build_pr_body() -> None:
@@ -79,7 +76,12 @@ def write_summary() -> None:
         )
         return
 
-    if inputs.commit_count in ("0", ""):
+    if inputs.commit_count == "":
+        # check step never produced output — an earlier step failed
+        append_summary("### Sync did not complete", "", "Check the workflow logs for details.")
+        return
+
+    if inputs.commit_count == "0":
         append_summary(
             "### Already up to date",
             "",

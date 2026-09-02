@@ -11,7 +11,7 @@ name: Sync Upstream
 
 on:
   push:
-    branches: upstream_fork_sync_1
+    branches: upstream_fork_sync_1   # remove this line before merging to master
   workflow_dispatch:
     inputs:
       dry_run:
@@ -50,9 +50,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-
-      - name: Verify scripts
-        run: ls -la .github/scripts/upstream_sync/
 
       - name: Install Python dependencies
         run: pip install -r .github/scripts/requirements.txt --quiet
