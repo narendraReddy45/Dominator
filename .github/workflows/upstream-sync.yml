@@ -91,6 +91,13 @@ jobs:
           RUN_NUMBER:     ${{ github.run_number }}
           RUN_URL:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
+      - name: Capture sync branch HEAD before push
+        id: pre_push
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
+        run: |
+          sha=$(git rev-parse "origin/$SYNC_BRANCH" 2>/dev/null || echo "")
+          echo "prev_sha=$sha" >> "$GITHUB_OUTPUT"
+
       - name: Push sync branch
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: git push origin "upstream/$UPSTREAM_BRANCH:refs/heads/$SYNC_BRANCH" --force --quiet
@@ -112,7 +119,7 @@ jobs:
           OLDEST_DATE:       ${{ steps.check.outputs.oldest_date }}
           NEWEST_DATE:       ${{ steps.check.outputs.newest_date }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          RUN_URL:           ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PREV_SHA:          ${{ steps.pre_push.outputs.prev_sha }}
 
       - name: Build Slack payload
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != '' && env.SLACK_WEBHOOK_URL != ''

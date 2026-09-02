@@ -1,7 +1,7 @@
 import json
 
 from .settings import Settings, UpsertPrSettings
-from .utils import PR_BODY_FILE, gh, set_output
+from .utils import PR_BODY_FILE, gh, git, set_output
 
 
 def ensure_labels() -> None:
@@ -35,6 +35,23 @@ def _apply_pr_state(cfg: Settings, inputs: UpsertPrSettings, pr_number: str) -> 
         gh("pr", "edit",  pr_number, "--remove-label", "conflicts", check=False)
 
 
+def _delta_comment(prev_sha: str, upstream_ref: str) -> str | None:
+    rows = git(
+        "log", f"{prev_sha}..{upstream_ref}",
+        "--pretty=format:| `%h` | %s | %an | %ad |",
+        "--date=short",
+    ).rstrip("\n")
+    if not rows:
+        return None
+    count = rows.count("\n") + 1
+    return (
+        f"{count} new commit(s) added since the last sync update:\n\n"
+        "| SHA | Message | Author | Date |\n"
+        "|---|---|---|---|\n"
+        f"{rows}"
+    )
+
+
 def _update_pr(cfg: Settings, inputs: UpsertPrSettings, pr_number: str, title: str) -> None:
     gh(
         "pr", "edit", pr_number,
@@ -44,14 +61,10 @@ def _update_pr(cfg: Settings, inputs: UpsertPrSettings, pr_number: str, title: s
     )
     _apply_pr_state(cfg, inputs, pr_number)
 
-    # Comment so reviewers know the branch was updated with new upstream commits.
-    # This is especially important when the PR was already approved — the approval
-    # may be auto-dismissed by GitHub (if "Dismiss stale reviews" is on), but the
-    # comment makes the update explicit regardless of repo settings.
-    comment = f"Updated by upstream-sync: {inputs.commit_count} commit(s) now queued from upstream."
-    if inputs.run_url:
-        comment += f"\n\nWorkflow run: {inputs.run_url}"
-    gh("pr", "comment", pr_number, "--body", comment)
+    if inputs.prev_sha:
+        comment = _delta_comment(inputs.prev_sha, cfg.upstream_ref)
+        if comment:
+            gh("pr", "comment", pr_number, "--body", comment)
 
 
 def upsert_pr() -> None:
