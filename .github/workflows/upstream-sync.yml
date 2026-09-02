@@ -29,6 +29,7 @@ env:
   BASE_BRANCH:     master
   SYNC_BRANCH:     chore/sync-upstream
   PYTHONPATH:      .github/scripts
+  GH_REPO:         ${{ github.repository }}
 
 concurrency:
   group: upstream-sync
