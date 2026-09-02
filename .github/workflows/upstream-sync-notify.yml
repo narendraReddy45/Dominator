@@ -21,7 +21,8 @@ jobs:
     # Only fire for merged (not just closed) PRs that carry the upstream-sync label.
     if: >-
       github.event.pull_request.merged == true &&
-      contains(github.event.pull_request.labels.*.name, 'upstream-sync')
+      contains(github.event.pull_request.labels.*.name, 'upstream-sync') &&
+      secrets.SLACK_WEBHOOK_URL != ''
 
     steps:
       - name: Notify Slack — upstream sync merged
