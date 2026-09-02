@@ -112,6 +112,7 @@ jobs:
           OLDEST_DATE:       ${{ steps.check.outputs.oldest_date }}
           NEWEST_DATE:       ${{ steps.check.outputs.newest_date }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          RUN_URL:           ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Build Slack payload
         if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != '' && env.SLACK_WEBHOOK_URL != ''

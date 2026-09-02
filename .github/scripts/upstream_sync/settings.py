@@ -43,6 +43,7 @@ class UpsertPrSettings(_Base):
     commit_count: str   = "?"
     oldest_date: str    = ""
     newest_date: str    = ""
+    run_url: str        = ""
 
 
 class SummarySettings(_Base):
