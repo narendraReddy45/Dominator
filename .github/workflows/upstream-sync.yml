@@ -69,11 +69,11 @@ jobs:
 
       - name: Detect merge conflicts
         id: conflicts
-        if: steps.check.outputs.skip != 'true'
+        if: steps.check.outputs.skip == 'false'
         run: python3 -m upstream_sync detect-conflicts
 
       - name: Build PR description
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        if: steps.check.outputs.skip == 'false' && steps.conflicts.outcome == 'success' && inputs.dry_run != 'true'
         run: python3 -m upstream_sync build-pr-body
         env:
           HAS_CONFLICTS:  ${{ steps.conflicts.outputs.has_conflicts }}
@@ -90,24 +90,24 @@ jobs:
 
       - name: Capture sync branch HEAD before push
         id: pre_push
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
+        if: steps.check.outputs.skip == 'false' && steps.conflicts.outcome == 'success' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: |
           sha=$(git rev-parse "origin/$SYNC_BRANCH" 2>/dev/null || echo "")
           echo "prev_sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Push sync branch
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
+        if: steps.check.outputs.skip == 'false' && steps.conflicts.outcome == 'success' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: git push origin "upstream/$UPSTREAM_BRANCH:refs/heads/$SYNC_BRANCH" --force --quiet
 
       - name: Ensure labels exist
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
+        if: steps.check.outputs.skip == 'false' && steps.conflicts.outcome == 'success' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: python3 -m upstream_sync ensure-labels
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Create or update PR
         id: pr
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
+        if: steps.check.outputs.skip == 'false' && steps.conflicts.outcome == 'success' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: python3 -m upstream_sync upsert-pr
         env:
           GH_TOKEN:          ${{ github.token }}
