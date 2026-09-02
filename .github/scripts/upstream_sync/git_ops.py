@@ -31,17 +31,18 @@ def check() -> None:
 
 def detect_conflicts() -> None:
     cfg = Settings()
+    worktree = "/tmp/_conflict_check"
     try:
-        git("checkout", "-B", "_conflict_check", cfg.origin_base_ref, "--quiet")
+        git("worktree", "add", "--detach", worktree, cfg.origin_base_ref)
 
         is_ff = git_rc("merge-base", "--is-ancestor", cfg.origin_base_ref, cfg.upstream_ref) == 0
         set_output("fast_forward", "true" if is_ff else "false")
         if not is_ff:
             print("::warning::Upstream may have rewritten history (non-fast-forward).")
 
-        git("merge", cfg.upstream_ref, "--no-commit", "--no-ff", "--quiet", check=False)
+        git("merge", cfg.upstream_ref, "--no-commit", "--no-ff", "--quiet", check=False, cwd=worktree)
 
-        raw = git("ls-files", "-u")
+        raw = git("ls-files", "-u", cwd=worktree)
         if not raw:
             set_output("has_conflicts",  "false")
             set_output("conflict_count", "0")
@@ -53,6 +54,5 @@ def detect_conflicts() -> None:
             set_output("conflict_files", "\n".join(files))
 
     finally:
-        git("merge",    "--abort",                          check=False)
-        git("checkout", "--detach", cfg.origin_base_ref,   check=False)
-        git("branch",   "-D", "_conflict_check",            check=False)
+        git("merge",    "--abort",          check=False, cwd=worktree)
+        git("worktree", "remove", "--force", worktree,   check=False)

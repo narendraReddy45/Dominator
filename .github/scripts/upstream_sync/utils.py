@@ -6,15 +6,15 @@ from pathlib import Path
 PR_BODY_FILE = Path("/tmp/pr_body.md")
 
 
-def _run_cmd(cmd: list[str], check: bool) -> str:
-    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+def _run_cmd(cmd: list[str], check: bool, cwd: str | None = None) -> str:
+    result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=cwd)
     if check and result.returncode != 0:
         sys.exit(f"{cmd[0]} {' '.join(cmd[1:])} failed: {result.stderr.strip()}")
     return result.stdout.strip()
 
 
-def git(*args: str, check: bool = True) -> str:
-    return _run_cmd(["git", *args], check=check)
+def git(*args: str, check: bool = True, cwd: str | None = None) -> str:
+    return _run_cmd(["git", *args], check=check, cwd=cwd)
 
 
 def git_rc(*args: str) -> int:
