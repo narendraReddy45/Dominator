@@ -91,18 +91,18 @@ jobs:
           RUN_URL:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
       - name: Push sync branch
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: git push origin "upstream/$UPSTREAM_BRANCH:refs/heads/$SYNC_BRANCH" --force --quiet
 
       - name: Ensure labels exist
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: python3 -m upstream_sync ensure-labels
         env:
           GH_TOKEN: ${{ github.token }}
 
       - name: Create or update PR
         id: pr
-        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.check.outputs.commit_count != '0'
         run: python3 -m upstream_sync upsert-pr
         env:
           GH_TOKEN:          ${{ github.token }}

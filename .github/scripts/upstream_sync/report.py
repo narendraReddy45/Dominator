@@ -79,6 +79,14 @@ def write_summary() -> None:
         )
         return
 
+    if inputs.commit_count in ("0", ""):
+        append_summary(
+            "### Already up to date",
+            "",
+            "Fork is fully synced with upstream. No PR created.",
+        )
+        return
+
     if not inputs.pr_url:
         append_summary("### Sync did not complete", "", "Check the workflow logs for details.")
         return
