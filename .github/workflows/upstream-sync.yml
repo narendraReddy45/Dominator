@@ -1,0 +1,167 @@
+# Daily sync from Cloud-Foundations/Dominator (upstream) into this fork.
+# Logic lives in .github/scripts/upstream_sync/; this file is pure orchestration.
+#
+# Required secrets (Settings → Secrets → Actions):
+#   SLACK_WEBHOOK_URL  — Slack Incoming Webhook URL
+#
+# No PAT needed: GITHUB_TOKEN covers all repo operations within this fork.
+# Pulling from upstream requires no credentials (public repo).
+
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 6 * * *'   # Daily at 06:00 UTC — adjust to preference
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Detect changes but skip branch push and PR creation'
+        type: boolean
+        default: false
+      force_sync:
+        description: 'Force sync even when fork is already up to date'
+        type: boolean
+        default: false
+
+env:
+  UPSTREAM_REPO:   https://github.com/Cloud-Foundations/Dominator.git
+  UPSTREAM_BRANCH: master
+  BASE_BRANCH:     master
+  SYNC_BRANCH:     chore/sync-upstream
+  PYTHONPATH:      .github/scripts
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: true
+
+jobs:
+  sync:
+    name: Sync from Cloud-Foundations/Dominator
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write       # push the sync branch
+      pull-requests: write  # open / update the PR
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Install Python dependencies
+        run: pip install -r .github/scripts/requirements.txt --quiet
+
+      - name: Setup git and fetch upstream
+        run: |
+          git config user.name  'github-actions[bot]'
+          git config user.email 'github-actions[bot]@users.noreply.github.com'
+          git remote add upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH" --no-tags --quiet
+
+      - name: Check for new commits
+        id: check
+        run: python3 -m upstream_sync check
+        env:
+          FORCE_SYNC: ${{ inputs.force_sync || 'false' }}
+
+      - name: Detect merge conflicts
+        id: conflicts
+        if: steps.check.outputs.skip != 'true'
+        run: python3 -m upstream_sync detect-conflicts
+
+      - name: Push sync branch
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        run: |
+          git checkout -B "$SYNC_BRANCH" "upstream/$UPSTREAM_BRANCH" --quiet
+          git push origin "$SYNC_BRANCH" --force --quiet
+
+      - name: Build PR description
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        run: python3 -m upstream_sync build-pr-body
+        env:
+          HAS_CONFLICTS:  ${{ steps.conflicts.outputs.has_conflicts }}
+          IS_FF:          ${{ steps.conflicts.outputs.fast_forward }}
+          CONFLICT_FILES: ${{ steps.conflicts.outputs.conflict_files }}
+          CONFLICT_COUNT: ${{ steps.conflicts.outputs.conflict_count }}
+          COMMIT_COUNT:   ${{ steps.check.outputs.commit_count }}
+          OLDEST_DATE:    ${{ steps.check.outputs.oldest_date }}
+          NEWEST_DATE:    ${{ steps.check.outputs.newest_date }}
+          DIFFSTAT:       ${{ steps.check.outputs.diffstat }}
+          EVENT_NAME:     ${{ github.event_name }}
+          RUN_NUMBER:     ${{ github.run_number }}
+          RUN_URL:        ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Ensure labels exist
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        run: python3 -m upstream_sync ensure-labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Create or update PR
+        id: pr
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true'
+        run: python3 -m upstream_sync upsert-pr
+        env:
+          GH_TOKEN:          ${{ github.token }}
+          HAS_CONFLICTS:     ${{ steps.conflicts.outputs.has_conflicts }}
+          COMMIT_COUNT:      ${{ steps.check.outputs.commit_count }}
+          OLDEST_DATE:       ${{ steps.check.outputs.oldest_date }}
+          NEWEST_DATE:       ${{ steps.check.outputs.newest_date }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      - name: Build Slack payload
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != ''
+        env:
+          PR_ACTION:    ${{ steps.pr.outputs.pr_action }}
+          HAS_CONFLICTS: ${{ steps.conflicts.outputs.has_conflicts }}
+          COMMIT_COUNT: ${{ steps.check.outputs.commit_count }}
+          DIFFSTAT:     ${{ steps.check.outputs.diffstat }}
+          PR_URL:       ${{ steps.pr.outputs.pr_url }}
+          PR_NUMBER:    ${{ steps.pr.outputs.pr_number }}
+        run: |
+          HEADER=$([ "$PR_ACTION" = "created" ] && echo "Upstream Sync PR Created" || echo "Upstream Sync PR Updated")
+          STATUS=$([ "$HAS_CONFLICTS" = "true" ] && echo "Conflicts - resolve before merging" || echo "Clean merge")
+          TEXT=$([ "$PR_ACTION" = "created" ] && echo "New" || echo "Updated")
+          TEXT="$TEXT upstream sync PR — $STATUS"
+          jq -n \
+            --arg text    "$TEXT" \
+            --arg header  "$HEADER" \
+            --arg status  "$STATUS" \
+            --arg commits "$COMMIT_COUNT" \
+            --arg diff    "$DIFFSTAT" \
+            --arg url     "$PR_URL" \
+            --arg prnum   "$PR_NUMBER" \
+            '{
+              text: $text,
+              blocks: [
+                { type: "header", text: { type: "plain_text", text: $header } },
+                { type: "section", fields: [
+                  { type: "mrkdwn", text: ("*Status:*\n" + $status) },
+                  { type: "mrkdwn", text: ("*New commits:*\n" + $commits) },
+                  { type: "mrkdwn", text: ("*Changes:*\n" + $diff) },
+                  { type: "mrkdwn", text: ("*Pull request:*\n<" + $url + "|PR #" + $prnum + ">") }
+                ]}
+              ]
+            }' > /tmp/slack_payload.json
+
+      - name: Notify Slack
+        if: steps.check.outputs.skip != 'true' && inputs.dry_run != 'true' && steps.pr.outputs.pr_url != ''
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload-file-path: /tmp/slack_payload.json
+
+      - name: Write job summary
+        if: always()
+        run: python3 -m upstream_sync write-summary
+        env:
+          SKIP:          ${{ steps.check.outputs.skip }}
+          DRY_RUN:       ${{ inputs.dry_run || 'false' }}
+          HAS_CONFLICTS: ${{ steps.conflicts.outputs.has_conflicts }}
+          COMMIT_COUNT:  ${{ steps.check.outputs.commit_count }}
+          DIFFSTAT:      ${{ steps.check.outputs.diffstat }}
+          PR_URL:        ${{ steps.pr.outputs.pr_url }}
+          PR_ACTION:     ${{ steps.pr.outputs.pr_action }}

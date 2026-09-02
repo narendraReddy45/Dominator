@@ -1,0 +1,65 @@
+# Sends a Slack notification when an upstream sync PR is merged into master.
+#
+# Triggering: pull_request [closed] on master — filtered to merged PRs carrying
+# the "upstream-sync" label so only sync PRs fire this notification.
+#
+# Required secrets:
+#   SLACK_WEBHOOK_URL  — same Incoming Webhook used by upstream-sync.yml
+
+name: Upstream Sync — Merge Notification
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [master]
+
+jobs:
+  notify-merged:
+    name: Notify Slack on sync PR merge
+    runs-on: ubuntu-latest
+
+    # Only fire for merged (not just closed) PRs that carry the upstream-sync label.
+    if: >-
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'upstream-sync')
+
+    steps:
+      - name: Notify Slack — upstream sync merged
+        uses: slackapi/slack-github-action@v2
+        with:
+          webhook: ${{ secrets.SLACK_WEBHOOK_URL }}
+          webhook-type: incoming-webhook
+          payload: |
+            {
+              "text": "Upstream sync PR #${{ github.event.pull_request.number }} merged into PureStorage/Dominator master",
+              "blocks": [
+                {
+                  "type": "header",
+                  "text": {
+                    "type": "plain_text",
+                    "text": "Upstream Sync Merged"
+                  }
+                },
+                {
+                  "type": "section",
+                  "fields": [
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Pull request:*\n<${{ github.event.pull_request.html_url }}|PR #${{ github.event.pull_request.number }}>"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Merged by:*\n${{ github.event.pull_request.merged_by.login }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Merged at:*\n${{ github.event.pull_request.merged_at }}"
+                    },
+                    {
+                      "type": "mrkdwn",
+                      "text": "*Repository:*\n<https://github.com/${{ github.repository }}|${{ github.repository }}>"
+                    }
+                  ]
+                }
+              ]
+            }
