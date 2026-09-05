@@ -1,0 +1,71 @@
+# Shared build job. Called by ci.yml (every PR/master push) and release.yml
+# (every tag push), so both pipelines run identical build logic -- never two
+# YAML copies that can silently drift apart.
+#
+# Linux is the gate: it's where tests run, and it builds both servers and
+# clients. Darwin runs after Linux passes (never in parallel) and builds
+# clients only (servers aren't cross-platform) -- its failure blocks CI and
+# release alike, since a broken darwin compile is a real regression, not
+# runner noise.
+name: Build
+
+on:
+  workflow_call:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # full history for git describe
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Generate build info
+        run: make generate # //go:embed needs BUILD_INFO before go test/go build touch that package
+
+      - name: Run tests
+        run: make test
+
+      - name: Build & package
+        env:
+          PLATFORM: linux-amd64
+        run: .github/scripts/release/run.sh build-linux
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.ref_type == 'tag'
+        with:
+          name: dominator-build-linux-amd64
+          path: dist/
+          if-no-files-found: error
+
+  build-darwin:
+    needs: build-linux
+    runs-on: macos-15 # native arm64 -- avoids cross-compile/strip issues
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 0 # full history for git describe
+
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Build & package
+        env:
+          PLATFORM: darwin-arm64
+        run: .github/scripts/release/run.sh build-darwin
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: github.ref_type == 'tag'
+        with:
+          name: dominator-build-darwin-arm64
+          path: dist/
+          if-no-files-found: error
