@@ -1,12 +1,6 @@
 #!/usr/bin/env bash
 source "$(dirname "${BASH_SOURCE[0]}")/constants.sh"
 
-is_server() {
-  local s
-  for s in "${SERVERS[@]}"; do [[ "$s" == "$1" ]] && return 0; done
-  return 1
-}
-
 # Catches a server added to one of SERVERS / Makefile .tarball targets but not the other.
 verify_servers_list() {
   local makefile_servers declared missing extra
@@ -23,12 +17,9 @@ verify_servers_list() {
 # Platform-suffixed so two build legs can merge into one dist/ without collisions.
 # strict hard-fails on a missing binary instead of warning (Linux only).
 collect_client_binaries() {
-  local src="$1" suffix="$2" strict="${3:-}" name d
+  local src="$1" suffix="$2" strict="${3:-}" name
   mkdir -p "$DIST_DIR/binaries"
-  for d in cmd/*/; do
-    name="${d%/}"
-    name="${name##*/}"
-    is_server "$name" && continue
+  for name in "${CLIENTS[@]}"; do
     if [[ -f "$src/$name" ]]; then
       cp -p "$src/$name" "$DIST_DIR/binaries/${name}-${suffix}"
     elif [[ -n "$strict" ]]; then
@@ -62,13 +53,10 @@ build_linux() {
 build_darwin() {
   : "${PLATFORM:?}"
   make generate # //go:embed needs BUILD_INFO before go build touches that package
-  local out="/tmp/${LOGNAME:-runner}-darwin" targets=() d name
+  local out="/tmp/${LOGNAME:-runner}-darwin" targets=() name
   mkdir -p "$out"
-  for d in cmd/*/; do
-    name="${d%/}"
-    name="${name##*/}"
-    is_server "$name" && continue
-    targets+=("./$d")
+  for name in "${CLIENTS[@]}"; do
+    targets+=("./cmd/$name")
   done
   # Trailing slash on -o: go build with multiple packages discards binaries without it.
   CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=true -o "$out/" "${targets[@]}"

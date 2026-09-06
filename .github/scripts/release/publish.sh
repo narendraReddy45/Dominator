@@ -3,7 +3,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/constants.sh"
 
 publish_github() {
   : "${VERSION:?}"
-  local files=("$DIST_DIR"/tarballs/* "$DIST_DIR"/binaries/* "$DIST_DIR/BUILD_INFO")
+  local files=("$DIST_DIR"/tarballs/* "$DIST_DIR"/binaries/* "$DIST_DIR/BUILD_INFO" "$DIST_DIR/SHA256SUMS")
 
   if ! gh release view "$VERSION" >/dev/null 2>&1; then
     gh release create "$VERSION" --title "$VERSION" --generate-notes --verify-tag --latest "${files[@]}"
@@ -40,6 +40,7 @@ publish_jfrog() {
   for v in "$VERSION" latest; do
     jf rt upload "$DIST_DIR/tarballs/*" "${JFROG_REPO}/dominator/${v}/tarballs/" --flat=true --fail-no-op
     jf rt upload "$DIST_DIR/binaries/*" "${JFROG_REPO}/dominator/${v}/binaries/" --flat=true --fail-no-op
+    jf rt upload "$DIST_DIR/SHA256SUMS" "${JFROG_REPO}/dominator/${v}/" --flat=true --fail-no-op
   done
   # BUILD_INFO under $VERSION must be uploaded last -- it's what the existence check above trusts.
   jf rt upload "$DIST_DIR/BUILD_INFO" "${JFROG_REPO}/dominator/latest/" --flat=true --fail-no-op
