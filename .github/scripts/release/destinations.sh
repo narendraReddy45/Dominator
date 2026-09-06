@@ -53,11 +53,10 @@ stamp_version() {
   done
 }
 
+# One combined file, not one per group -- GitHub release assets are a flat
+# namespace, so a tarballs/SHA256SUMS and a binaries/SHA256SUMS would collide.
 compute_checksums() {
   require_dist_populated
-  local group
-  for group in tarballs binaries; do
-    (cd "$DIST_DIR/$group" && sha256sum -- * >SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS)
-    cat "$DIST_DIR/$group/SHA256SUMS"
-  done
+  (cd "$DIST_DIR" && sha256sum tarballs/* binaries/* | sed -E 's#  (tarballs|binaries)/#  #' >SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS)
+  cat "$DIST_DIR/SHA256SUMS"
 }
