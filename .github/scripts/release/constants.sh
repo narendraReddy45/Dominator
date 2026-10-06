@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Each entry needs a matching <name>.tarball target in the Makefile.
 SERVERS=(disruption-manager dominator filegen-server fleet-manager hypervisor
   image-unpacker imageserver imaginator installer mdbd subd)
 
@@ -9,4 +10,3 @@ CLIENTS=(ami-publisher builder-tool domtool filegen-client fs2objectcache
   vm-control)
 
 DIST_DIR="dist"
-SUPPORTED_DESTINATIONS=(github jfrog)
