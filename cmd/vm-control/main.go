@@ -23,11 +23,23 @@ import (
 var (
 	adjacentVM = flag.String("adjacentVM", "",
 		"IP address of VM adjacent (same Hypervisor) to VM being created")
-	consoleType hyper_proto.ConsoleType
-	cpuPriority = flag.Int("cpuPriority", 0,
+	allocationManagerHostname = flag.String("allocationManagerHostname", "",
+		"Hostname of Allocation Manager")
+	allocationManagerPortNum = flag.Uint("allocationManagerPortNum",
+		constants.FleetManagerPortNumber,
+		"Port number of Allocation Manager")
+	allocateTimeout = flag.Duration("allocateTimeout", 0,
+		"Time to wait before timing out on allocation request for VM (default infinite")
+	architectureType hyper_proto.ArchitectureType
+	consoleType      hyper_proto.ConsoleType
+	cpuPriority      = flag.Int("cpuPriority", 0,
 		"CPU priority (-20:+19) for VM process on Hypervisor")
+	destroyOnDhcpTimeout = flag.Bool("destroyOnDhcpTimeout", false,
+		"If true, destroy newly created VM if DHCP timeout is reached")
 	destroyOnPowerdown = flag.Bool("destroyOnPowerdown", false,
 		"If true, destroy VM if it powers down internally")
+	destroyOnProbeTimeout = flag.Bool("destroyOnProbeTimeout", false,
+		"If true, destroy newly created VM if probe timeout is reached")
 	destroyProtection = flag.Bool("destroyProtection", false,
 		"If true, do not destroy running VM")
 	disableVirtIO = flag.Bool("disableVirtIO", false,
@@ -48,7 +60,8 @@ var (
 		"Port number of Fleet Resource Manager")
 	forceIfNotStopped = flag.Bool("forceIfNotStopped", false,
 		"If true, snapshot or restore VM even if not stopped")
-	hypervisorHostname = flag.String("hypervisorHostname", "",
+	hypervisorArchitectureToMatch hyper_proto.ArchitectureType
+	hypervisorHostname            = flag.String("hypervisorHostname", "",
 		"Hostname of hypervisor")
 	hypervisorPortNum = flag.Uint("hypervisorPortNum",
 		constants.HypervisorPortNumber, "Port number of hypervisor")
@@ -59,6 +72,8 @@ var (
 		"Filename of PEM-encoded key available from metadata service (deprecated: use identityName instead)")
 	identityName = flag.String("identityName", "",
 		"Identity name for requesting role certificates from IdentityProvider")
+	includeAllocationRequests = flag.Bool("includeAllocationRequests", false,
+		"If true, include allocation requests in get-allocation-updates")
 	includeUnhealthy = flag.Bool("includeUnhealthy", false,
 		"If true, list connected but unhealthy hypervisors")
 	includeVMs = flag.Bool("includeVMs", true,
@@ -142,6 +157,8 @@ var (
 		"Name file containing user-data accessible from the metadata server")
 	virtualCPUs = flag.Uint("vCPUs", 0,
 		"virtual CPUs (default rounds up milliCPUs)")
+	virtualiserImageName = flag.String("virtualiserImageName", "",
+		"Optional name of image containing virtualiser programme. This is currently a privileged operation")
 	vmHostname    = flag.String("vmHostname", "", "Hostname for VM")
 	vmTags        tags.Tags
 	vmTagsToMatch tags.MatchTags
@@ -164,10 +181,14 @@ var (
 )
 
 func init() {
+	flag.Var(&architectureType, "architectureType",
+		"Type of CPU architecture to emulate (default auto/Hypervisor native)")
 	flag.Var(&consoleType, "consoleType",
 		"type of graphical console (default none)")
 	flag.Var(&firmwareType, "firmwareType",
 		"type of firmware (default bios on i386/amd64)")
+	flag.Var(&hypervisorArchitectureToMatch, "hypervisorArchitectureToMatch",
+		"CPU architecture match when getting/listing or creating/copying/moving VMs")
 	flag.Var(&hypervisorTagsToMatch, "hypervisorTagsToMatch",
 		"Tags to match when getting/listing or creating/copying/moving VMs")
 	flag.Var(&machineType, "machineType",
@@ -209,7 +230,7 @@ func printUsage() {
 	fmt.Fprintln(w, "Common flags:")
 	flag.PrintDefaults()
 	fmt.Fprintln(w, "Commands:")
-	commands.PrintCommands(w, subcommands)
+	commands.PrintCommandsAligned(w, subcommands)
 }
 
 var subcommands = []commands.Command{
@@ -250,6 +271,8 @@ var subcommands = []commands.Command{
 	{"discard-vm-snapshot", "IPaddr", 1, 1, discardVmSnapshotSubcommand},
 	{"export-local-vm", "IPaddr", 1, 1, exportLocalVmSubcommand},
 	{"export-virsh-vm", "IPaddr", 1, 1, exportVirshVmSubcommand},
+	{"get-allocation-updates", "starting-position", 1, 1,
+		getAllocationUpdatesSubcommand},
 	{"get-hypervisors", "", 0, 0, getHypervisorsSubcommand},
 	{"get-ip-info", "IPaddr", 1, 1, getIpInfoSubcommand},
 	{"get-vm-create-request", "IPaddr", 1, 1, getVmCreateRequestSubcommand},
@@ -257,6 +280,8 @@ var subcommands = []commands.Command{
 	{"get-vm-info", "IPaddr", 1, 1, getVmInfoSubcommand},
 	{"get-vm-infos", "", 0, 0, getVmInfosSubcommand},
 	{"get-vm-user-data", "IPaddr", 1, 1, getVmUserDataSubcommand},
+	{"get-vm-virtualiser-log-file", "IPaddr filename", 2, 2,
+		getVmVirtualiserLogFileSubcommand},
 	{"get-vm-volume", "IPaddr", 1, 1, getVmVolumeSubcommand},
 	{"get-vm-volume-storage-configuration", "IPaddr", 1, 1,
 		getVmVolumeStorageConfigurationSubcommand},
@@ -265,6 +290,8 @@ var subcommands = []commands.Command{
 		importVirshVmSubcommand},
 	{"list-hypervisors", "", 0, 0, listHypervisorsSubcommand},
 	{"list-locations", "[TopLocation]", 0, 1, listLocationsSubcommand},
+	{"list-vm-virtualiser-log-files", "IPaddr", 1, 1,
+		listVmVirtualiserLogFilesSubcommand},
 	{"list-vms", "", 0, 0, listVMsSubcommand},
 	{"make-create-vm-request", "", 0, 0, makeCreateVmRequestSubcommand},
 	{"migrate-vm", "IPaddr", 1, 1, migrateVmSubcommand},

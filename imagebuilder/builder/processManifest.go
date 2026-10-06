@@ -1,6 +1,7 @@
 package builder
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"text/template"
 	"time"
 
 	"github.com/Cloud-Foundations/Dominator/lib/expand"
@@ -21,6 +23,12 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/srpc"
 	"github.com/Cloud-Foundations/Dominator/lib/verstr"
 )
+
+var templateFuncMap = template.FuncMap{
+	"Contains": strings.Contains,
+	"ToLower":  strings.ToLower,
+	"ToUpper":  strings.ToUpper,
+}
 
 func deleteDirectories(directoriesToDelete []string) error {
 	for index := len(directoriesToDelete) - 1; index >= 0; index-- {
@@ -70,17 +78,18 @@ func makeDirectory(directory string, directoriesToDelete []string,
 	}
 }
 
-func makeMountPoints(rootDir string, bindMounts []string,
+func makeMountPoints(rootDir string, bindMounts []bindMountType,
 	buildLog io.Writer) ([]string, error) {
 	var directoriesToDelete []string
 	directoriesWhichExist := make(map[string]struct{})
 	defer deleteDirectories(directoriesToDelete)
 	bindMountDirectories := make(map[string]struct{}, len(bindMounts))
 	for _, bindMount := range bindMounts {
-		bindMountDirectories[filepath.Join(rootDir, bindMount)] = struct{}{}
+		directory := filepath.Join(rootDir, bindMount.target)
+		bindMountDirectories[directory] = struct{}{}
 	}
 	for _, bindMount := range bindMounts {
-		directory := filepath.Join(rootDir, bindMount)
+		directory := filepath.Join(rootDir, bindMount.target)
 		var err error
 		directoriesToDelete, err = makeDirectory(directory, directoriesToDelete,
 			directoriesWhichExist, bindMountDirectories, buildLog)
@@ -91,6 +100,86 @@ func makeMountPoints(rootDir string, bindMounts []string,
 	retval := directoriesToDelete
 	directoriesToDelete = nil // Do not clean up in the defer.
 	return retval, nil
+}
+
+func processFilesGroups(manifestDir, groupPrefix, rootDir string,
+	envGetter environmentGetter, buildLog io.Writer) error {
+	err := copyFiles(manifestDir, groupPrefix, rootDir, buildLog)
+	if err != nil {
+		return err
+	}
+	err = appendFiles(manifestDir, groupPrefix+".append", rootDir, buildLog)
+	if err != nil {
+		return err
+	}
+	err = processTemplatedFiles(manifestDir, groupPrefix+".templated", rootDir,
+		envGetter.getenv(), buildLog)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func processPackages(ctx context.Context, g *goroutine.Goroutine,
+	manifestDir, rootDir string, envGetter environmentGetter,
+	buildLog io.Writer) error {
+	filename := filepath.Join(manifestDir, "package-list")
+	tmpl, err := readTemplateFile(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	buffer := &bytes.Buffer{}
+	if err := tmpl.Execute(buffer, envGetter.getenv()); err != nil {
+		return fmt.Errorf("error executing template: %s", err)
+	}
+	packageList, err := fsutil.ReadLines(buffer)
+	if err != nil {
+		return err
+	}
+	if len(packageList) < 1 {
+		return nil
+	}
+	err = updatePackageDatabase(ctx, g, rootDir, envGetter, buildLog)
+	if err != nil {
+		return err
+	}
+	err = installPackages(ctx, g, packageList, rootDir, envGetter, buildLog)
+	if err != nil {
+		return errors.New("error installing packages: " + err.Error())
+	}
+	return nil
+}
+
+func processTemplatedFile(destFilename, sourceFilename string, mode os.FileMode,
+	templateData map[string]string, buildLog io.Writer) error {
+	tmpl, err := readTemplateFile(sourceFilename)
+	if err != nil {
+		return err
+	}
+	buffer := &bytes.Buffer{}
+	if err := tmpl.Execute(buffer, templateData); err != nil {
+		return fmt.Errorf("error executing template: %s", err)
+	}
+	return fsutil.CopyToFile(destFilename, mode, buffer, 0)
+}
+
+func processTemplatedFiles(manifestDir, dirname, rootDir string,
+	templateData map[string]string, buildLog io.Writer) error {
+	startTime := time.Now()
+	sourceDir := filepath.Join(manifestDir, dirname)
+	cf := func(destFilename, sourceFilename string, mode os.FileMode) error {
+		return processTemplatedFile(destFilename, sourceFilename, mode,
+			templateData, buildLog)
+	}
+	if err := fsutil.CopyTreeWithCopyFunc(rootDir, sourceDir, cf); err != nil {
+		return fmt.Errorf("error copying %s: %s", dirname, err)
+	}
+	fmt.Fprintf(buildLog, "\nProcessed %s tree in %s\n",
+		dirname, format.Duration(time.Since(startTime)))
+	return nil
 }
 
 // readManifestFile will read the manifest file in the manifest directory and
@@ -143,9 +232,22 @@ func readManifestFile(manifestDir string, envGetter environmentGetter) (
 	return manifestConfig, nil
 }
 
+func readTemplateFile(filename string) (*template.Template, error) {
+	data, err := os.ReadFile(filename)
+	if err != nil {
+		return nil, err
+	}
+	tmpl := template.New("aTemplateFile").Funcs(templateFuncMap)
+	tmpl, err = tmpl.Parse(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("error parsing template: %s", err)
+	}
+	return tmpl, nil
+}
+
 func unpackImageAndProcessManifest(ctx context.Context, client srpc.ClientI,
 	manifestDir string, maxSourceAge time.Duration, rootDir string,
-	bindMounts []string, applyFilter bool, envGetter environmentGetter,
+	bindMounts []bindMountType, applyFilter bool, envGetter environmentGetter,
 	buildLog io.Writer, logger log.Logger) (manifestType, error) {
 	manifestConfig, err := readManifestFile(manifestDir, envGetter)
 	if err != nil {
@@ -201,16 +303,17 @@ func unpackImageAndProcessManifest(ctx context.Context, client srpc.ClientI,
 }
 
 func processManifest(ctx context.Context, manifestDir, rootDir string,
-	bindMounts []string, envGetter environmentGetter,
+	bindMounts []bindMountType, envGetter environmentGetter,
 	buildLog io.Writer) error {
-	// Copy in system /etc/resolv.conf
+	// Read contents of system /etc/resolv.conf
 	file, err := os.Open("/etc/resolv.conf")
 	if err != nil {
 		return err
 	}
 	defer file.Close()
 	for index, bindMount := range bindMounts {
-		bindMounts[index] = filepath.Clean(bindMount)
+		bindMounts[index].source = filepath.Clean(bindMount.source)
+		bindMounts[index].target = filepath.Clean(bindMount.target)
 	}
 	directoriesToDelete, err := makeMountPoints(rootDir, bindMounts, buildLog)
 	if err != nil {
@@ -229,10 +332,7 @@ func processManifest(ctx context.Context, manifestDir, rootDir string,
 	if err != nil {
 		return fmt.Errorf("error copying in /etc/resolv.conf: %s", err)
 	}
-	if err := copyFiles(manifestDir, "files", rootDir, buildLog); err != nil {
-		return err
-	}
-	err = appendFiles(manifestDir, "files.append", rootDir, buildLog)
+	err = processFilesGroups(manifestDir, "files", rootDir, envGetter, buildLog)
 	if err != nil {
 		return err
 	}
@@ -241,29 +341,12 @@ func processManifest(ctx context.Context, manifestDir, rootDir string,
 	if err != nil {
 		return err
 	}
-	packageList, err := fsutil.LoadLines(filepath.Join(manifestDir,
-		"package-list"))
-	if err != nil {
-		if !os.IsNotExist(err) {
-			return err
-		}
-	}
-	if len(packageList) > 0 {
-		err := updatePackageDatabase(ctx, g, rootDir, envGetter, buildLog)
-		if err != nil {
-			return err
-		}
-	}
-	err = installPackages(ctx, g, packageList, rootDir, envGetter, buildLog)
-	if err != nil {
-		return errors.New("error installing packages: " + err.Error())
-	}
-	err = copyFiles(manifestDir, "post-install-files", rootDir, buildLog)
+	err = processPackages(ctx, g, manifestDir, rootDir, envGetter, buildLog)
 	if err != nil {
 		return err
 	}
-	err = appendFiles(manifestDir, "post-install-files.append",
-		rootDir, buildLog)
+	err = processFilesGroups(manifestDir, "post-install-files", rootDir,
+		envGetter, buildLog)
 	if err != nil {
 		return err
 	}
@@ -278,7 +361,8 @@ func processManifest(ctx context.Context, manifestDir, rootDir string,
 	if err := clearResolvConf(ctx, g, buildLog, rootDir); err != nil {
 		return err
 	}
-	err = copyFiles(manifestDir, "post-scripts-files", rootDir, buildLog)
+	err = processFilesGroups(manifestDir, "post-scripts-files", rootDir,
+		envGetter, buildLog)
 	if err != nil {
 		return err
 	}
@@ -404,6 +488,7 @@ func runScripts(ctx context.Context, g *goroutine.Goroutine, manifestDir,
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
+	scriptsToRun := make([]string, 0, len(names))
 	for _, name := range names {
 		if len(name) > 0 && name[0] == '.' {
 			continue // Skip hidden paths.
@@ -414,15 +499,9 @@ func runScripts(ctx context.Context, g *goroutine.Goroutine, manifestDir,
 		if err != nil {
 			return err
 		}
+		scriptsToRun = append(scriptsToRun, name)
 	}
-	if g == nil {
-		g, err = newNamespaceTargetWithMounts(rootDir, nil)
-		if err != nil {
-			return err
-		}
-		defer g.Quit()
-	}
-	for _, name := range names {
+	for _, name := range scriptsToRun {
 		fmt.Fprintf(buildLog, "Running script: %s\n", name)
 		startTime := time.Now()
 		err := runInTarget(ctx, g, nil, buildLog, buildLog, rootDir, envGetter,

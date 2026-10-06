@@ -7,9 +7,15 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/filesystem"
 	"github.com/Cloud-Foundations/Dominator/lib/filter"
 	"github.com/Cloud-Foundations/Dominator/lib/tags"
+	"github.com/Cloud-Foundations/Dominator/lib/types"
 )
 
 const (
+	ArchitectureTypeAuto  = 0
+	ArchitectureTypeAmd64 = 1
+	ArchitectureTypeArm64 = 2
+	// ArchitectureTypeRuntime is defined in architecture-specific files.
+
 	ConsoleNone  = 0
 	ConsoleDummy = 1
 	ConsoleVNC   = 2
@@ -18,8 +24,10 @@ const (
 	FirmwareBIOS    = 1
 	FirmwareUEFI    = 2
 
-	MachineTypeGenericPC = 0
+	MachineTypeAuto      = 0
 	MachineTypeQ35       = 1
+	MachineTypeGenericPC = 2
+	MachineTypeVirt      = 3
 
 	StateStarting      = 0
 	StateRunning       = 1
@@ -38,6 +46,7 @@ const (
 	VolumeInterfaceVirtIO = 0
 	VolumeInterfaceIDE    = 1
 	VolumeInterfaceNVMe   = 2
+	VolumeInterfaceDFM    = 3
 
 	VolumeTypePersistent = 0
 	VolumeTypeMemory     = 1
@@ -75,6 +84,8 @@ type AddVmVolumesRequest struct {
 type AddVmVolumesResponse struct {
 	Error string
 }
+
+type ArchitectureType uint
 
 type BecomePrimaryVmOwnerRequest struct {
 	IpAddress net.IP
@@ -327,6 +338,13 @@ type CreateVmResponse struct { // Multiple responses are sent.
 	Error           string
 }
 
+type DfmProfile string
+
+type DfmParams struct {
+	NvramSize types.Bytes `json:",omitempty"`
+	Profile   DfmProfile  `json:",omitempty"`
+}
+
 type DebugVmImageRequest struct {
 	DhcpTimeout      time.Duration // <0: no DHCP; 0: no wait; >0 DHPC wait.
 	ImageDataSize    uint64
@@ -459,6 +477,7 @@ type GetUpdatesRequest struct {
 type Update struct {
 	HaveAddressPool      bool               `json:",omitempty"`
 	AddressPool          []Address          `json:",omitempty"` // Used & free.
+	ArchitectureType     ArchitectureType   `json:",omitempty"`
 	AvailableMemoryInMiB *uint64            `json:",omitempty"`
 	HaveDisabled         bool               `json:",omitempty"`
 	Disabled             bool               `json:",omitempty"`
@@ -535,6 +554,16 @@ type GetVmUserDataResponse struct {
 	Length uint64
 } // Data (length=Length) are streamed afterwards.
 
+type GetVmVirtualiserLogFileRequest struct {
+	Filename  string
+	IpAddress net.IP
+}
+
+type GetVmVirtualiserLogFileResponse struct {
+	Error  string
+	Length uint64
+} // Data (length=Length) are streamed afterwards.
+
 // The GetVmVolume() RPC is followed by the proto/rsync.GetBlocks message.
 
 type GetVmVolumeRequest struct {
@@ -560,7 +589,7 @@ type GetVmVolumeStorageConfigurationResponse struct {
 	VolumeStorageIndices []uint        `json:",omitempty"`
 }
 
-type GroupId uint
+type GroupId = types.GroupId
 
 type HoldLockRequest struct {
 	Timeout   time.Duration
@@ -611,6 +640,16 @@ type ListVMsRequest struct {
 
 type ListVMsResponse struct {
 	IpAddresses []net.IP
+}
+
+type ListVmVirtualiserLogFilesRequest struct {
+	IpAddress net.IP
+}
+
+type ListVmVirtualiserLogFilesResponse struct {
+	Error     string
+	Filenames []string
+	Lengths   []uint64
 }
 
 type ListVolumeDirectoriesRequest struct{}
@@ -912,45 +951,48 @@ type UpdateSubnetsResponse struct {
 	Error string
 }
 
-type UserId uint
+type UserId = types.UserId
 
 type VmInfo struct {
-	Address             Address
-	ChangedStateOn      time.Time    `json:",omitempty"`
-	ConsoleType         ConsoleType  `json:",omitempty"`
-	CreatedOn           time.Time    `json:",omitempty"`
-	CpuPriority         int          `json:",omitempty"`
-	DestroyOnPowerdown  bool         `json:",omitempty"`
-	DestroyProtection   bool         `json:",omitempty"`
-	DisableVirtIO       bool         `json:",omitempty"`
-	ExtraKernelOptions  string       `json:",omitempty"`
-	FirmwareType        FirmwareType `json:",omitempty"`
-	Hostname            string       `json:",omitempty"`
-	IdentityExpires     time.Time    `json:",omitempty"`
-	IdentityName        string       `json:",omitempty"`
-	ImageName           string       `json:",omitempty"`
-	ImageURL            string       `json:",omitempty"`
-	MachineType         MachineType  `json:",omitempty"`
-	MemoryInMiB         uint64
-	MilliCPUs           uint
-	NetworkEntries      []NetworkEntry `json:",omitempty"`
-	OwnerGroups         []string       `json:",omitempty"`
-	OwnerUsers          []string       `json:",omitempty"`
-	RootFileSystemLabel string         `json:",omitempty"`
-	SpreadVolumes       bool           `json:",omitempty"`
-	State               State
-	SecondaryAddresses  []Address      `json:",omitempty"`
-	SecondarySubnetIDs  []string       `json:",omitempty"`
-	SubnetId            string         `json:",omitempty"`
-	Tags                tags.Tags      `json:",omitempty"`
-	Uncommitted         bool           `json:",omitempty"`
-	VirtualCPUs         uint           `json:",omitempty"`
-	Volumes             []Volume       `json:",omitempty"`
-	WatchdogAction      WatchdogAction `json:",omitempty"`
-	WatchdogModel       WatchdogModel  `json:",omitempty"`
+	Address              Address
+	ArchitectureType     ArchitectureType `json:",omitempty"`
+	ChangedStateOn       time.Time        `json:",omitempty"`
+	ConsoleType          ConsoleType      `json:",omitempty"`
+	CreatedOn            time.Time        `json:",omitempty"`
+	CpuPriority          int              `json:",omitempty"`
+	DestroyOnPowerdown   bool             `json:",omitempty"`
+	DestroyProtection    bool             `json:",omitempty"`
+	DisableVirtIO        bool             `json:",omitempty"`
+	ExtraKernelOptions   string           `json:",omitempty"`
+	FirmwareType         FirmwareType     `json:",omitempty"`
+	Hostname             string           `json:",omitempty"`
+	IdentityExpires      time.Time        `json:",omitempty"`
+	IdentityName         string           `json:",omitempty"`
+	ImageName            string           `json:",omitempty"`
+	ImageURL             string           `json:",omitempty"`
+	MachineType          MachineType      `json:",omitempty"`
+	MemoryInMiB          uint64
+	MilliCPUs            uint
+	NetworkEntries       []NetworkEntry `json:",omitempty"`
+	OwnerGroups          []string       `json:",omitempty"`
+	OwnerUsers           []string       `json:",omitempty"`
+	RootFileSystemLabel  string         `json:",omitempty"`
+	SpreadVolumes        bool           `json:",omitempty"`
+	State                State
+	SecondaryAddresses   []Address      `json:",omitempty"`
+	SecondarySubnetIDs   []string       `json:",omitempty"`
+	SubnetId             string         `json:",omitempty"`
+	Tags                 tags.Tags      `json:",omitempty"`
+	Uncommitted          bool           `json:",omitempty"`
+	VirtualCPUs          uint           `json:",omitempty"`
+	VirtualiserImageName string         `json:",omitempty"`
+	Volumes              []Volume       `json:",omitempty"`
+	WatchdogAction       WatchdogAction `json:",omitempty"`
+	WatchdogModel        WatchdogModel  `json:",omitempty"`
 }
 
 type Volume struct {
+	DFM         DfmParams         `json:",omitempty"`
 	Format      VolumeFormat      `json:",omitempty"`
 	Interface   VolumeInterface   `json:",omitempty"`
 	Size        uint64            `json:",omitempty"`

@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/Cloud-Foundations/Dominator/lib/filesystem"
@@ -21,6 +22,7 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/image"
 	"github.com/Cloud-Foundations/Dominator/lib/log"
 	"github.com/Cloud-Foundations/Dominator/lib/srpc"
+	"github.com/Cloud-Foundations/Dominator/lib/stringutil"
 	"github.com/Cloud-Foundations/Dominator/lib/tags/tagmatcher"
 	proto "github.com/Cloud-Foundations/Dominator/proto/imageserver"
 )
@@ -130,7 +132,7 @@ func (imdb *ImageDataBase) changeImageExpiration(name string,
 	if img == nil {
 		return false, errors.New("image not found")
 	}
-	if err := imdb.checkPermissions(name, img, authInfo); err != nil {
+	if err := imdb.checkPermissions(name, imgType, authInfo); err != nil {
 		return false, err
 	}
 	if img.ExpiresAt.IsZero() {
@@ -242,7 +244,7 @@ func (imdb *ImageDataBase) checkImage(name string) bool {
 }
 
 // This must be called with the lock held.
-func (imdb *ImageDataBase) checkPermissions(imageName string, img *image.Image,
+func (imdb *ImageDataBase) checkPermissions(imageName string, img *imageType,
 	authInfo *srpc.AuthInformation) error {
 	if authInfo == nil {
 		return errNoAuthInfo
@@ -250,10 +252,18 @@ func (imdb *ImageDataBase) checkPermissions(imageName string, img *image.Image,
 	if authInfo.HaveMethodAccess {
 		return nil
 	}
-	if authInfo.Username != "" && img != nil {
-		if img.CreatedBy == authInfo.Username ||
-			img.CreatedFor == authInfo.Username {
+	if authInfo.Username != "" && img != nil && img.image != nil {
+		if img.image.CreatedBy == authInfo.Username ||
+			img.image.CreatedFor == authInfo.Username {
 			return nil
+		}
+		if _, ok := img.ownerUsers[authInfo.Username]; ok {
+			return nil
+		}
+		for group := range authInfo.GroupList {
+			if _, ok := img.ownerGroups[group]; ok {
+				return nil
+			}
 		}
 	}
 	dirname := filepath.Dir(imageName)
@@ -282,6 +292,24 @@ func (imdb *ImageDataBase) chownDirectory(dirname, ownerGroup string,
 	directoryMetadata.OwnerGroup = ownerGroup
 	return imdb.updateDirectoryMetadata(
 		image.Directory{Name: dirname, Metadata: directoryMetadata})
+}
+
+func (imdb *ImageDataBase) getImages(imageNames []string,
+	ignoreMissing bool) ([]*image.Image, error) {
+	imdb.RLock()
+	defer imdb.RUnlock()
+	images := make([]*image.Image, 0, len(imageNames))
+	for _, imageName := range imageNames {
+		if img, _ := imdb.getImageWithLock(imageName); img == nil {
+			if !ignoreMissing {
+				return nil, fmt.Errorf("unknown image: %s", imageName)
+			}
+			images = append(images, nil)
+		} else {
+			images = append(images, img)
+		}
+	}
+	return images, nil
 }
 
 // prepareToWrite returns an error if the image already exists or is being
@@ -362,6 +390,26 @@ func (imdb *ImageDataBase) countImages() uint {
 	return uint(len(imdb.imageMap))
 }
 
+func (imdb *ImageDataBase) deleteDirectory(name string,
+	authInfo *srpc.AuthInformation) error {
+	if authInfo == nil {
+		return errNoAuthInfo
+	}
+	imdb.Lock()
+	defer imdb.Unlock()
+	if _, ok := imdb.directoryMap[name]; !ok {
+		return errors.New("directory: " + name + " does not exist")
+	} else {
+		dirname := filepath.Join(imdb.BaseDirectory, name)
+		if err := os.Remove(dirname); err != nil {
+			return err
+		}
+		delete(imdb.directoryMap, name)
+		imdb.rmdirNotifiers.sendPlain(name, "rmdir", imdb.Logger)
+		return nil
+	}
+}
+
 func (imdb *ImageDataBase) deleteImage(name string,
 	authInfo *srpc.AuthInformation) error {
 	imdb.Lock()
@@ -371,7 +419,8 @@ func (imdb *ImageDataBase) deleteImage(name string,
 	} else if img == nil {
 		return errors.New("image: " + name + " is being written")
 	} else {
-		if err := imdb.checkPermissions(name, img, authInfo); err != nil {
+		imgType, _ := imdb.getImageTypeWithLock(name)
+		if err := imdb.checkPermissions(name, imgType, authInfo); err != nil {
 			return err
 		}
 		filename := filepath.Join(imdb.BaseDirectory, name)
@@ -594,6 +643,7 @@ func (imdb *ImageDataBase) listDirectories() []image.Directory {
 func (imdb *ImageDataBase) listImages(
 	request proto.ListSelectedImagesRequest) []string {
 	tagMatcher := tagmatcher.New(request.TagsToMatch, false)
+	directoryMatcher := newDirectoryMatcher(request.DirectoryName)
 	imdb.RLock()
 	defer imdb.RUnlock()
 	names := make([]string, 0)
@@ -607,9 +657,26 @@ func (imdb *ImageDataBase) listImages(
 		if !tagMatcher.MatchEach(img.image.Tags) {
 			continue
 		}
+		if !directoryMatcher(name) {
+			continue
+		}
 		names = append(names, name)
 	}
 	return names
+}
+
+// newDirectoryMatcher returns a predicate matching image names by directory.
+func newDirectoryMatcher(directoryName string) func(name string) bool {
+	switch {
+	case directoryName == "" || directoryName == ".":
+		return func(string) bool { return true }
+	case strings.HasSuffix(directoryName, "/"):
+		dir := strings.TrimSuffix(directoryName, "/")
+		return func(name string) bool { return filepath.Dir(name) == dir }
+	default:
+		prefix := directoryName + "/"
+		return func(name string) bool { return strings.HasPrefix(name, prefix) }
+	}
 }
 
 func (imdb *ImageDataBase) makeDirectory(directory image.Directory,
@@ -685,6 +752,14 @@ func (imdb *ImageDataBase) registerAddNotifier() <-chan string {
 	imdb.Lock()
 	defer imdb.Unlock()
 	imdb.addNotifiers[channel] = channel
+	return channel
+}
+
+func (imdb *ImageDataBase) registerDeleteDirectoryNotifier() <-chan string {
+	channel := make(chan string, 1)
+	imdb.Lock()
+	defer imdb.Unlock()
+	imdb.rmdirNotifiers[channel] = channel
 	return channel
 }
 
@@ -781,6 +856,13 @@ func (imdb *ImageDataBase) unregisterAddNotifier(channel <-chan string) {
 	delete(imdb.addNotifiers, channel)
 }
 
+func (imdb *ImageDataBase) unregisterDeleteDirectoryNotifier(
+	channel <-chan string) {
+	imdb.Lock()
+	defer imdb.Unlock()
+	delete(imdb.rmdirNotifiers, channel)
+}
+
 func (imdb *ImageDataBase) unregisterDeleteNotifier(channel <-chan string) {
 	imdb.Lock()
 	defer imdb.Unlock()
@@ -794,15 +876,21 @@ func (imdb *ImageDataBase) unregisterMakeDirectoryNotifier(
 	delete(imdb.mkdirNotifiers, channel)
 }
 
-// Write the specified image, assuming other writers are blocked and validation
-// checks have been performed.
+// Write the specified image and update refcounts, assuming other writers are
+// blocked and validation checks have been performed.
 func (imdb *ImageDataBase) writeImage(name string, img *image.Image,
 	exclusive bool) error {
 	computedFiles := img.FileSystem.GetComputedFiles()
+	ownerGroups := stringutil.ConvertListToMap(img.OwnerGroups, false)
+	ownerUsers := stringutil.ConvertListToMap(img.OwnerUsers, false)
 	usageEstimate := img.FileSystem.EstimateUsage(0)
 	filename := filepath.Join(imdb.BaseDirectory, name)
 	fileChecksum, err := writeImage(filename, img, exclusive)
 	if err != nil {
+		return err
+	}
+	if err := imdb.Params.ObjectServer.AdjustRefcounts(true, img); err != nil {
+		os.Remove(filename)
 		return err
 	}
 	imdb.scheduleExpiration(img, name)
@@ -811,11 +899,13 @@ func (imdb *ImageDataBase) writeImage(name string, img *image.Image,
 		computedFiles: computedFiles,
 		fileChecksum:  fileChecksum,
 		image:         img,
+		ownerGroups:   ownerGroups,
+		ownerUsers:    ownerUsers,
 		usageEstimate: usageEstimate,
 	}
 	imdb.addNotifiers.sendPlain(name, "add", imdb.Logger)
 	imdb.Unlock()
-	return imdb.Params.ObjectServer.AdjustRefcounts(true, img)
+	return nil
 }
 
 // This must be called with the modifying flag set to true.

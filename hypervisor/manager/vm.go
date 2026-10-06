@@ -5,14 +5,14 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/tls"
-	"flag"
 	"fmt"
 	"io"
 	"io/ioutil"
 	"net"
-	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -50,6 +50,7 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/stringutil"
 	"github.com/Cloud-Foundations/Dominator/lib/tags"
 	"github.com/Cloud-Foundations/Dominator/lib/tags/tagmatcher"
+	"github.com/Cloud-Foundations/Dominator/lib/url/urlutil"
 	"github.com/Cloud-Foundations/Dominator/lib/verstr"
 	"github.com/Cloud-Foundations/Dominator/lib/wsyscall"
 	proto "github.com/Cloud-Foundations/Dominator/proto/hypervisor"
@@ -58,9 +59,9 @@ import (
 )
 
 const (
-	bootlogFilename      = "bootlog"
 	lastPatchLogFilename = "lastPatchLog"
 	serialSockFilename   = "serial0.sock"
+	virtualiserDirname   = "virtualiser"
 
 	rebootJson = `{ "execute": "send-key",
      "arguments": { "keys": [ { "type": "qcode", "data": "ctrl" },
@@ -74,9 +75,6 @@ var (
 	errorNoAccessToResource = errors.New("no access to resource")
 	newlineLiteral          = []byte{'\n'}
 	newlineReplacement      = []byte{'\\', 'n'}
-
-	qemuCommand = flag.String("qemuCommand", "qemu-system-x86_64",
-		"QEMU command")
 )
 
 func checkCpuPriority(authInfo *srpc.AuthInformation, cpuPriority int) error {
@@ -118,6 +116,23 @@ func copyData(filename string, reader io.Reader, length uint64,
 	}
 	_, err = io.CopyN(file, reader, int64(length))
 	return err
+}
+
+func copyVolume(filename, qemuImgPath string, reader io.Reader,
+	volume *proto.Volume,
+	index int, wantInit bool, logger log.DebugLogger) error {
+	switch volume.Interface {
+	case proto.VolumeInterfaceDFM:
+		if reader != nil {
+			return fmt.Errorf("cannot copy data into DFM volume")
+		}
+		if wantInit {
+			return fmt.Errorf("cannot initialise DFM volume")
+		}
+		return makeDfmVolume(filename, qemuImgPath, index, volume)
+	default:
+		return copyData(filename, reader, volume.Size, logger)
+	}
 }
 
 func createTapDeviceOnBridge(bridge string, numQueues uint) (
@@ -400,6 +415,12 @@ func (m *Manager) allocateVm(req proto.CreateVmRequest,
 	if err := os.MkdirAll(dirname, fsutil.DirPerms); err != nil {
 		return nil, err
 	}
+	if err := req.ArchitectureType.CheckValid(); err != nil {
+		return nil, err
+	}
+	if req.ArchitectureType == proto.ArchitectureTypeAuto {
+		req.ArchitectureType = proto.ArchitectureTypeRuntime
+	}
 	if err := req.ConsoleType.CheckValid(); err != nil {
 		return nil, err
 	}
@@ -436,6 +457,9 @@ func (m *Manager) allocateVm(req proto.CreateVmRequest,
 				fmt.Errorf("subnet: %s specified multiple times", subnetId)
 		}
 		subnetIDs[subnetId] = struct{}{}
+	}
+	if req.VirtualiserImageName != "" && !authInfo.HaveMethodAccess {
+		return nil, errors.New("custom virtualiser not permitted")
 	}
 	address, subnetId, err := m.getFreeAddress(req.Address.IpAddress,
 		req.SubnetId, authInfo)
@@ -484,31 +508,33 @@ func (m *Manager) allocateVm(req proto.CreateVmRequest,
 	vm := &vmInfoType{
 		LocalVmInfo: proto.LocalVmInfo{
 			VmInfo: proto.VmInfo{
-				Address:            address,
-				CreatedOn:          time.Now(),
-				ConsoleType:        req.ConsoleType,
-				CpuPriority:        req.CpuPriority,
-				DestroyOnPowerdown: req.DestroyOnPowerdown,
-				DestroyProtection:  req.DestroyProtection,
-				DisableVirtIO:      req.DisableVirtIO,
-				ExtraKernelOptions: req.ExtraKernelOptions,
-				FirmwareType:       req.FirmwareType,
-				Hostname:           req.Hostname,
-				ImageName:          req.ImageName,
-				ImageURL:           req.ImageURL,
-				MachineType:        req.MachineType,
-				MemoryInMiB:        req.MemoryInMiB,
-				MilliCPUs:          req.MilliCPUs,
-				OwnerGroups:        req.OwnerGroups,
-				SpreadVolumes:      req.SpreadVolumes,
-				SecondaryAddresses: secondaryAddresses,
-				SecondarySubnetIDs: req.SecondarySubnetIDs,
-				State:              proto.StateStopped,
-				SubnetId:           subnetId,
-				Tags:               req.Tags,
-				VirtualCPUs:        req.VirtualCPUs,
-				WatchdogAction:     req.WatchdogAction,
-				WatchdogModel:      req.WatchdogModel,
+				Address:              address,
+				ArchitectureType:     req.ArchitectureType,
+				CreatedOn:            time.Now(),
+				ConsoleType:          req.ConsoleType,
+				CpuPriority:          req.CpuPriority,
+				DestroyOnPowerdown:   req.DestroyOnPowerdown,
+				DestroyProtection:    req.DestroyProtection,
+				DisableVirtIO:        req.DisableVirtIO,
+				ExtraKernelOptions:   req.ExtraKernelOptions,
+				FirmwareType:         req.FirmwareType,
+				Hostname:             req.Hostname,
+				ImageName:            req.ImageName,
+				ImageURL:             req.ImageURL,
+				MachineType:          req.MachineType,
+				MemoryInMiB:          req.MemoryInMiB,
+				MilliCPUs:            req.MilliCPUs,
+				OwnerGroups:          req.OwnerGroups,
+				SpreadVolumes:        req.SpreadVolumes,
+				SecondaryAddresses:   secondaryAddresses,
+				SecondarySubnetIDs:   req.SecondarySubnetIDs,
+				State:                proto.StateStopped,
+				SubnetId:             subnetId,
+				Tags:                 req.Tags,
+				VirtualCPUs:          req.VirtualCPUs,
+				VirtualiserImageName: req.VirtualiserImageName,
+				WatchdogAction:       req.WatchdogAction,
+				WatchdogModel:        req.WatchdogModel,
 			},
 		},
 		blockMutations:   true,
@@ -1479,6 +1505,7 @@ func (m *Manager) createVm(conn *srpc.Conn) error {
 			return err
 		}
 		writeRawOptions := util.WriteRawOptions{
+			ArchitectureType:   request.ArchitectureType,
 			ExtraKernelOptions: request.ExtraKernelOptions,
 			InitialImageName:   imageName,
 			MinimumFreeBytes:   request.MinimumFreeBytes,
@@ -1515,20 +1542,13 @@ func (m *Manager) createVm(conn *srpc.Conn) error {
 		if err := drainingReader.Drain(); err != nil {
 			return err
 		}
-		httpResponse, err := http.Get(request.ImageURL)
+		rc, err := m.openImageUrl(request.ImageURL)
 		if err != nil {
 			return sendError(conn, err)
 		}
-		defer httpResponse.Body.Close()
-		if httpResponse.StatusCode != http.StatusOK {
-			return sendError(conn, errors.New(httpResponse.Status))
-		}
-		if httpResponse.ContentLength < 0 {
-			return sendError(conn,
-				errors.New("ContentLength from: "+request.ImageURL))
-		}
-		err = vm.copyRootVolume(request, bufio.NewReader(httpResponse.Body),
-			uint64(httpResponse.ContentLength), rootVolume.Type)
+		defer rc.Close()
+		err = vm.copyRootVolume(request, bufio.NewReader(rc), rc.Size(),
+			rootVolume.Type)
 		if err != nil {
 			return sendError(conn, err)
 		}
@@ -1548,6 +1568,9 @@ func (m *Manager) createVm(conn *srpc.Conn) error {
 			return sendError(conn, err)
 		}
 	}
+	if err := vm.unpackVirtualiser(request.ImageTimeout); err != nil {
+		return sendError(conn, err)
+	}
 	if len(request.SecondaryVolumes) > 0 {
 		err := sendUpdate(conn, "creating secondary volumes")
 		if err != nil {
@@ -1559,11 +1582,16 @@ func (m *Manager) createVm(conn *srpc.Conn) error {
 			if request.SecondaryVolumesData {
 				dataReader = conn
 			}
-			err := copyData(fname, dataReader, volume.Size, vm.logger)
+			wantInit := index < len(request.SecondaryVolumesInit)
+			err := copyVolume(fname,
+				filepath.Join(vm.getVirtualiserBinaryDirectory(), "qemu-img"),
+				dataReader, &volume, index+1, wantInit,
+				vm.logger)
 			if err != nil {
 				return sendError(conn, err)
 			}
-			if dataReader == nil && index < len(request.SecondaryVolumesInit) {
+			vm.Volumes[index+1].Size = volume.Size
+			if dataReader == nil && wantInit {
 				vinit := request.SecondaryVolumesInit[index]
 				err := util.MakeExt4fsWithParams(fname, util.MakeExt4fsParams{
 					NoDiscard:                true,
@@ -1712,6 +1740,7 @@ func (m *Manager) debugVmImage(conn *srpc.Conn,
 			return err
 		}
 		writeRawOptions := util.WriteRawOptions{
+			ArchitectureType: vm.ArchitectureType,
 			InitialImageName: imageName,
 			MinimumFreeBytes: request.MinimumFreeBytes,
 			OverlayFiles:     request.OverlayFiles,
@@ -1736,20 +1765,12 @@ func (m *Manager) debugVmImage(conn *srpc.Conn,
 		if err := drainingReader.Drain(); err != nil {
 			return err
 		}
-		httpResponse, err := http.Get(request.ImageURL)
+		rc, err := m.openImageUrl(request.ImageURL)
 		if err != nil {
 			return sendError(conn, err)
 		}
-		defer httpResponse.Body.Close()
-		if httpResponse.StatusCode != http.StatusOK {
-			return sendError(conn, errors.New(httpResponse.Status))
-		}
-		if httpResponse.ContentLength < 0 {
-			return sendError(conn,
-				errors.New("ContentLength from: "+request.ImageURL))
-		}
-		err = copyData(rootFilename, httpResponse.Body,
-			uint64(httpResponse.ContentLength), vm.logger)
+		defer rc.Close()
+		err = copyData(rootFilename, rc, rc.Size(), vm.logger)
 		if err != nil {
 			return sendError(conn, err)
 		}
@@ -1951,6 +1972,8 @@ func (m *Manager) exportLocalVm(authInfo *srpc.AuthInformation,
 
 func (m *Manager) getImage(searchName string, imageTimeout time.Duration) (
 	*srpc.Client, *image.Image, string, error) {
+	// TODO(rgooch): Consider ways to re-use the connection while handling
+	//               multiple concurrent users.
 	client, err := srpc.DialHTTP("tcp", m.ImageServerAddress, 0)
 	if err != nil {
 		return nil, nil, "",
@@ -2126,7 +2149,7 @@ func (m *Manager) getVmBootLog(ipAddr net.IP) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	filename := filepath.Join(vm.dirname, "bootlog")
+	filename := vm.getBootLogFilename()
 	vm.mutex.RUnlock()
 	return os.Open(filename)
 }
@@ -2213,6 +2236,33 @@ func (m *Manager) getVmLockWatcher(ipAddr net.IP) (
 	}
 	defer vm.mutex.RUnlock()
 	return vm.lockWatcher, nil
+}
+
+func (m *Manager) getVmVirtualiserLogFile(ipAddr net.IP,
+	authInfo *srpc.AuthInformation, filename string) (
+	io.ReadCloser, uint64, error) {
+	if filename == "" ||
+		filename == "." ||
+		filename == "/" ||
+		filename != filepath.Base(filename) {
+		return nil, 0, fmt.Errorf("invalid filename")
+	}
+	vm, err := m.getVmLockAndAuth(ipAddr, false, authInfo, nil)
+	if err != nil {
+		return nil, 0, err
+	}
+	pathname := filepath.Join(vm.getLogsDirectory(), filename)
+	vm.mutex.RUnlock()
+	file, err := os.Open(pathname)
+	if err != nil {
+		return nil, 0, err
+	}
+	if fi, err := file.Stat(); err != nil {
+		file.Close()
+		return nil, 0, err
+	} else {
+		return file, uint64(fi.Size()), nil
+	}
 }
 
 func (m *Manager) getVmVolume(conn *srpc.Conn) error {
@@ -2538,6 +2588,30 @@ func (m *Manager) listVMs(request proto.ListVMsRequest) []string {
 		verstr.Sort(ipAddrs)
 	}
 	return ipAddrs
+}
+
+func (m *Manager) listVmVirtualiserLogFiles(ipAddr net.IP) (
+	[]string, []uint64, error) {
+	vm, err := m.getVmAndLock(ipAddr, false)
+	if err != nil {
+		return nil, nil, err
+	}
+	dirname := vm.getLogsDirectory()
+	vm.mutex.RUnlock()
+	filenames, err := fsutil.ReadDirnames(dirname, true)
+	if err != nil {
+		return nil, nil, err
+	}
+	lengths := make([]uint64, 0, len(filenames))
+	for _, filename := range filenames {
+		pathname := filepath.Join(dirname, filename)
+		if fi, err := os.Stat(pathname); err != nil {
+			return nil, nil, fmt.Errorf("error stating: %s: %s", pathname, err)
+		} else {
+			lengths = append(lengths, uint64(fi.Size()))
+		}
+	}
+	return filenames, lengths, nil
 }
 
 func (m *Manager) migrateVm(conn *srpc.Conn) error {
@@ -2912,6 +2986,29 @@ func (m *Manager) notifyVmMetadataRequest(ipAddr net.IP, path string) {
 	}
 }
 
+func (m *Manager) openImageUrl(rawurl string) (urlutil.SizedReadCloser, error) {
+	u, err := url.Parse(rawurl)
+	if err != nil {
+		return nil, err
+	}
+	if u.Scheme == "file" {
+		// Extra scrutiny required for local files.
+		if m.LocalImagesDirectory == "" {
+			return nil, fmt.Errorf("local image support not configured")
+		}
+		if filename := path.Clean(u.Path); filename != u.Path {
+			return nil, fmt.Errorf("%s is not a clean path", u.Path)
+		}
+		if len(u.Path) <= len(m.LocalImagesDirectory)+1 ||
+			u.Path[len(m.LocalImagesDirectory)] != '/' ||
+			u.Path[:len(m.LocalImagesDirectory)] != m.LocalImagesDirectory {
+			return nil, fmt.Errorf("%s is not beneath: %s",
+				u.Path, m.LocalImagesDirectory)
+		}
+	}
+	return urlutil.Open(rawurl)
+}
+
 func (m *Manager) patchVmImage(conn *srpc.Conn,
 	request proto.PatchVmImageRequest) error {
 	client, img, imageName, err := m.getImage(request.ImageName,
@@ -2971,8 +3068,12 @@ func (m *Manager) patchVmImage(conn *srpc.Conn,
 	} else {
 		objectsGetter = m.objectCache
 	}
-	bootInfo, err := util.GetBootInfo(img.FileSystem, vm.rootLabel(false),
-		"net.ifnames=0")
+	bootInfo, err := util.GetBootInfoWithParams(img.FileSystem,
+		util.MakeKernelOptionsParams{
+			ArchitectureType: vm.ArchitectureType,
+			ExtraOptions:     "net.ifnames=0",
+			RootDevice:       "LABEL=" + vm.rootLabel(false),
+		})
 	if err != nil {
 		return err
 	}
@@ -3426,6 +3527,7 @@ func (m *Manager) replaceVmImage(conn *srpc.Conn,
 			return err
 		}
 		writeRawOptions := util.WriteRawOptions{
+			ArchitectureType:   vm.ArchitectureType,
 			ExtraKernelOptions: vm.ExtraKernelOptions,
 			InitialImageName:   imageName,
 			MinimumFreeBytes:   request.MinimumFreeBytes,
@@ -3474,20 +3576,13 @@ func (m *Manager) replaceVmImage(conn *srpc.Conn,
 		if err := drainingReader.Drain(); err != nil {
 			return err
 		}
-		httpResponse, err := http.Get(request.ImageURL)
+		rc, err := m.openImageUrl(request.ImageURL)
 		if err != nil {
 			return sendError(conn, err)
 		}
-		defer httpResponse.Body.Close()
-		if httpResponse.StatusCode != http.StatusOK {
-			return sendError(conn, errors.New(httpResponse.Status))
-		}
-		if httpResponse.ContentLength < 0 {
-			return sendError(conn,
-				errors.New("ContentLength from: "+request.ImageURL))
-		}
-		reader := bufio.NewReader(httpResponse.Body)
-		newVolume.Size = uint64(httpResponse.ContentLength)
+		defer rc.Close()
+		reader := bufio.NewReader(rc)
+		newVolume.Size = rc.Size()
 		if newVolume.Format == proto.VolumeFormatQCOW2 {
 			qcow2Header, err := qcow2.PeekHeader(reader)
 			if err != nil {
@@ -4019,6 +4114,25 @@ func (m *Manager) stopVm(ipAddr net.IP, authInfo *srpc.AuthInformation,
 	return nil
 }
 
+func (m *Manager) unpackImage(imageName, rootDir string,
+	timeout time.Duration, logger log.DebugLogger) error {
+	client, img, imageName, err := m.getImage(imageName, timeout)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+	fs := img.FileSystem
+	var objectsGetter objectserver.ObjectsGetter
+	if m.objectCache == nil {
+		objectClient := objclient.AttachObjectClient(client)
+		defer objectClient.Close()
+		objectsGetter = objectClient
+	} else {
+		objectsGetter = m.objectCache
+	}
+	return util.Unpack(fs, objectsGetter, rootDir, logger)
+}
+
 func (m *Manager) unregisterVmMetadataNotifier(ipAddr net.IP,
 	pathChannel chan<- string) error {
 	vm, err := m.getVmAndLock(ipAddr, true)
@@ -4045,7 +4159,11 @@ func (m *Manager) writeRaw(volume proto.LocalVolume, extension string,
 	}
 	writeRawOptions.AllocateBlocks = true
 	if skipBootloader {
-		bootInfo, err := util.GetBootInfo(fs, writeRawOptions.RootLabel, "")
+		bootInfo, err := util.GetBootInfoWithParams(fs,
+			util.MakeKernelOptionsParams{
+				ArchitectureType: writeRawOptions.ArchitectureType,
+				RootDevice:       "LABEL=" + writeRawOptions.RootLabel,
+			})
 		if err != nil {
 			return err
 		}
@@ -4193,6 +4311,16 @@ func (vm *vmInfoType) copyRootVolume(request proto.CreateVmRequest,
 	return nil
 }
 
+// createLogsDirectory will delete an old logs directory and create a new one.
+func (vm *vmInfoType) createLogsDirectory() error {
+	if err := os.RemoveAll(vm.getLogsDirectory()); err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return os.Mkdir(vm.getLogsDirectory(), fsutil.PrivateDirPerms)
+}
+
 // delete deletes external VM state (files, leases, IPs). The VM lock will be
 // released and later grabbed. The Manager lock will be grabbed and released
 // while the VM lock is not held.
@@ -4298,6 +4426,10 @@ func (vm *vmInfoType) getActiveKernelPath() string {
 	return ""
 }
 
+func (vm *vmInfoType) getBootLogFilename() string {
+	return filepath.Join(vm.dirname, "bootlog")
+}
+
 func (vm *vmInfoType) getDebugRoot() string {
 	filename := vm.VolumeLocations[0].Filename + ".debug"
 	if _, err := os.Stat(filename); err == nil {
@@ -4306,12 +4438,31 @@ func (vm *vmInfoType) getDebugRoot() string {
 	return ""
 }
 
+func (vm *vmInfoType) getVirtualiserBinaryDirectory() string {
+	if vm.VirtualiserImageName == "" {
+		return ""
+	}
+	return filepath.Join(vm.getVirtualiserRootDirectory(), "bin")
+}
+
+func (vm *vmInfoType) getVirtualiserRootDirectory() string {
+	if vm.VirtualiserImageName == "" {
+		return ""
+	}
+	return filepath.Join(vm.VolumeLocations[0].DirectoryToCleanup,
+		virtualiserDirname)
+}
+
 func (vm *vmInfoType) getInitrdPath() string {
 	return filepath.Join(vm.VolumeLocations[0].DirectoryToCleanup, "initrd")
 }
 
 func (vm *vmInfoType) getKernelPath() string {
 	return filepath.Join(vm.VolumeLocations[0].DirectoryToCleanup, "kernel")
+}
+
+func (vm *vmInfoType) getLogsDirectory() string {
+	return filepath.Join(vm.VolumeLocations[0].DirectoryToCleanup, "logs")
 }
 
 func (vm *vmInfoType) kill() {
@@ -4404,7 +4555,7 @@ func (vm *vmInfoType) rootLabelSaved(debug bool) string {
 }
 
 func (vm *vmInfoType) serialManager() {
-	bootlogFile, err := os.OpenFile(filepath.Join(vm.dirname, bootlogFilename),
+	bootlogFile, err := os.OpenFile(vm.getBootLogFilename(),
 		os.O_CREATE|os.O_WRONLY|os.O_APPEND, fsutil.PublicFilePerms)
 	if err != nil {
 		vm.logger.Printf("error opening bootlog file: %s\n", err)
@@ -4508,6 +4659,12 @@ func (vm *vmInfoType) startManaging(dhcpTimeout time.Duration,
 	if err := vm.checkVolumes(true); err != nil {
 		vm.setState(proto.StateFailedToStart)
 		return false, err
+	}
+	if vm.State != proto.StateRunning {
+		if err := vm.createLogsDirectory(); err != nil {
+			vm.setState(proto.StateFailedToStart)
+			return false, err
+		}
 	}
 	if dhcpTimeout >= 0 {
 		err := vm.manager.DhcpServer.AddLease(vm.Address, vm.Hostname)
@@ -4765,6 +4922,15 @@ func (vm *vmInfoType) startVm(enableNetboot, haveManagerLock bool) error {
 		}
 	}
 	return nil
+}
+
+func (vm *vmInfoType) unpackVirtualiser(timeout time.Duration) error {
+	if vm.VirtualiserImageName == "" {
+		return nil
+	}
+	rootDir := vm.getVirtualiserRootDirectory()
+	return vm.manager.unpackImage(vm.VirtualiserImageName, rootDir, timeout,
+		vm.logger)
 }
 
 func (vm *vmInfoType) writeAndSendInfo() {

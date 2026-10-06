@@ -56,8 +56,13 @@ Some of the sub-commands available are:
 - **get-file-in-image**: get file in an image
 - **get-image-expiration**: get the expiration time for an image
 - **get-image-updates**: get a stream of image updates
+- **get-object-statistics-for-images**: get objects statistics for a list of
+                                        images
 - **get-package-list**: get package list for an image
 - **get-replication-master**: show the replication master for the imageserver
+- **import-fs-tree**: import a recursive file-system tree from a specified URL
+                      and write the corresponding image in the specified
+                      directory
 - **list**: list all images
 - **list-mdb**: list all image names in the MDB (images may not exist)
 - **list-not-in-mdb**: list all images not listed in the MDB
@@ -70,6 +75,9 @@ Some of the sub-commands available are:
 - **mkdir**: make a directory
 - **patch-directory**: patch (update) a local directory with an image
 - **restore-from-file**: restore an image from an imagearchive file
+- **rmdir**: delete a directory
+- **run-command-in-image-chroot**: unpack an image into a temporary directory
+                                   and run the specified command inside a chroot
 - **save-to-file**: save an image to an imagearchive file or stdout
 - **scan-filtered-files**: scan a directory and list those matched by the image filter
 - **show**: show (list) an image
@@ -88,6 +96,8 @@ Some of the sub-commands available are:
 - **tar**: create a tarfile from an image
 - **test-download-speed**: test the speed for downloading objects for an image
 - **trace-inode-history**: trace the change history of an inode in an image and its sources
+- **unpack-fs-tree**: fetch and unpack a recursive file-system tree from a
+                      specified URL and unpack in the specified local directory
 - **wait**: wait (with timeout) for an image to exist
 
 ## Security

@@ -3,8 +3,75 @@ package fleetmanager
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"net"
 )
+
+const (
+	allocationRequestUnknown = "UNKNOWN AllocationRequest"
+	probeStatusUnknown       = "UNKNOWN ProbeStatus"
+)
+
+var (
+	allocationDeletionReasonToText = map[AllocationDeletionReason]string{
+		AllocationRequestError:         "",
+		AllocationRequestCompleted:     "completed",
+		AllocationRequestCancelled:     "cancelled",
+		AllocationRequestCannotFit:     "cannot fit",
+		AllocationRequestExpired:       "expired",
+		AllocationRequestCreateTimeout: "create timeout",
+	}
+	textToAllocationDeletionReason map[string]AllocationDeletionReason
+
+	probeStatusToText = map[ProbeStatus]string{
+		ProbeStatusNotYetProbed:      "not yet probed",
+		ProbeStatusConnected:         "connected",
+		ProbeStatusAccessDenied:      "access denied",
+		ProbeStatusNoSrpc:            "no SRPC",
+		ProbeStatusNoService:         "no service",
+		ProbeStatusConnectionRefused: "connection refused",
+		ProbeStatusUnreachable:       "unreachable",
+		ProbeStatusOff:               "off",
+	}
+	textToProbeStatus map[string]ProbeStatus
+)
+
+func init() {
+	textToAllocationDeletionReason = make(map[string]AllocationDeletionReason)
+	for reason, text := range allocationDeletionReasonToText {
+		textToAllocationDeletionReason[text] = reason
+	}
+	textToProbeStatus = make(map[string]ProbeStatus)
+	for status, text := range probeStatusToText {
+		textToProbeStatus[text] = status
+	}
+}
+
+func (reason AllocationDeletionReason) MarshalText() ([]byte, error) {
+	if text := reason.String(); text == allocationRequestUnknown {
+		return nil, errors.New(text)
+	} else {
+		return []byte(text), nil
+	}
+}
+
+func (reason AllocationDeletionReason) String() string {
+	if str, ok := allocationDeletionReasonToText[reason]; !ok {
+		return allocationRequestUnknown
+	} else {
+		return str
+	}
+}
+
+func (reason *AllocationDeletionReason) UnmarshalText(text []byte) error {
+	txt := string(text)
+	if val, ok := textToAllocationDeletionReason[txt]; ok {
+		*reason = val
+		return nil
+	} else {
+		return errors.New("unknown AllocationDeletionReason: " + txt)
+	}
+}
 
 func listsEqual(left, right []string) bool {
 	if len(left) != len(right) {
@@ -47,6 +114,36 @@ func parseMAC(text []byte) (HardwareAddr, error) {
 	return addr, nil
 }
 
+func (request *AllocateRequest) CheckValid() error {
+	if len(request.VMs) < 1 {
+		return fmt.Errorf("no VMs requested")
+	}
+	for vmIndex, vm := range request.VMs {
+		if vm.MemoryInMiB < 64 {
+			return fmt.Errorf("vm[%d]: memory: %d MiB too small",
+				vmIndex, vm.MemoryInMiB)
+		}
+		if vm.MilliCPUs < 1 {
+			return fmt.Errorf("vm[%d]: MilliCPUs: %d too small",
+				vmIndex, vm.MilliCPUs)
+		}
+		if len(vm.NetworkInterfaces) < 1 {
+			return fmt.Errorf("vm[%d]: no network interfaces requested",
+				vmIndex)
+		}
+		if len(vm.Volumes) < 1 {
+			return fmt.Errorf("vm[%d]: no volumes requested", vmIndex)
+		}
+		for volIndex, volume := range vm.Volumes {
+			if volume.Size < 16<<20 {
+				return fmt.Errorf("vm[%d] volume[%d] size: %d too small",
+					vmIndex, volIndex, volume.Size)
+			}
+		}
+	}
+	return nil
+}
+
 func (left *HypervisorData) Equal(right *HypervisorData) bool {
 	if left.AllocatedMilliCPUs != right.AllocatedMilliCPUs {
 		return false
@@ -63,6 +160,9 @@ func (left *HypervisorData) Equal(right *HypervisorData) bool {
 	if left.AvailableMemory != right.AvailableMemory {
 		return false
 	}
+	if left.Disabled != right.Disabled {
+		return false
+	}
 	if len(left.NumFreeAddresses) != len(right.NumFreeAddresses) {
 		return false
 	}
@@ -71,10 +171,16 @@ func (left *HypervisorData) Equal(right *HypervisorData) bool {
 			return false
 		}
 	}
+	if left.ProbeStatus != right.ProbeStatus {
+		return false
+	}
 	return true
 }
 
 func (left *Machine) Equal(right *Machine) bool {
+	if left.ArchitectureType != right.ArchitectureType {
+		return false
+	}
 	if left.GatewaySubnetId != right.GatewaySubnetId {
 		return false
 	}
@@ -154,5 +260,31 @@ func (addr *HardwareAddr) UnmarshalText(text []byte) error {
 	} else {
 		*addr = HardwareAddr(hw)
 		return nil
+	}
+}
+
+func (status ProbeStatus) MarshalText() (text []byte, err error) {
+	if text := status.String(); text == probeStatusUnknown {
+		return nil, errors.New(text)
+	} else {
+		return []byte(text), nil
+	}
+}
+
+func (status ProbeStatus) String() string {
+	if str, ok := probeStatusToText[status]; !ok {
+		return probeStatusUnknown
+	} else {
+		return str
+	}
+}
+
+func (status *ProbeStatus) UnmarshalText(text []byte) error {
+	txt := string(text)
+	if val, ok := textToProbeStatus[txt]; ok {
+		*status = val
+		return nil
+	} else {
+		return errors.New("unknown ProbeStatus: " + txt)
 	}
 }
