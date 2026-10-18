@@ -3,7 +3,8 @@ source "$(dirname "${BASH_SOURCE[0]}")/constants.sh"
 
 publish_github() {
   require_dist_populated
-  local files=("$DIST_DIR"/tarballs/* "$DIST_DIR"/binaries/* "$DIST_DIR/BUILD_INFO" "$DIST_DIR/SHA256SUMS")
+  stage_github_assets
+  local files=("$DIST_DIR"/github/*)
 
   if ! gh release view "$VERSION" >/dev/null 2>&1; then
     gh release create "$VERSION" --title "$VERSION" --generate-notes --verify-tag --latest "${files[@]}"
@@ -36,7 +37,11 @@ publish_jfrog() {
 
   # --fail-no-op: jf rt upload exits 0 even when the glob matches nothing without it.
   jf rt upload "$DIST_DIR/tarballs/*" "${JFROG_REPO}/dominator/${VERSION}/tarballs/" --flat=true --fail-no-op
-  jf rt upload "$DIST_DIR/binaries/*" "${JFROG_REPO}/dominator/${VERSION}/binaries/" --flat=true --fail-no-op
+  local dir platform
+  for dir in "$DIST_DIR"/binaries/*/; do
+    platform="$(basename "$dir")"
+    jf rt upload "$DIST_DIR/binaries/$platform/*" "${JFROG_REPO}/dominator/${VERSION}/binaries/$platform/" --flat=true --fail-no-op
+  done
   jf rt upload "$DIST_DIR/SHA256SUMS" "${JFROG_REPO}/dominator/${VERSION}/" --flat=true --fail-no-op
   # BUILD_INFO is the completion marker the check above trusts -- upload it last.
   jf rt upload "$DIST_DIR/BUILD_INFO" "${JFROG_REPO}/dominator/${VERSION}/" --flat=true --fail-no-op

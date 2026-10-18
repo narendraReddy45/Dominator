@@ -12,21 +12,26 @@ require_dist_populated() {
   done
 }
 
-# A downloaded file carries no version of its own -- stamp it before checksums.
-stamp_version() {
-  require_dist_populated
-  local f
+# Flat names for manual download: <name>-<platform>-<version>.
+stage_github_assets() {
+  local out="$DIST_DIR/github" dir f platform
+  rm -rf "$out"
+  mkdir -p "$out"
   for f in "$DIST_DIR"/tarballs/*.tar.gz; do
-    mv "$f" "${f%.tar.gz}-${VERSION}.tar.gz"
+    cp -p "$f" "$out/$(basename "${f%.tar.gz}")-${VERSION}.tar.gz"
   done
-  for f in "$DIST_DIR"/binaries/*; do
-    mv "$f" "${f}-${VERSION}"
+  for dir in "$DIST_DIR"/binaries/*/; do
+    platform="$(basename "$dir")"
+    for f in "$dir"*; do
+      cp -p "$f" "$out/$(basename "$f")-${platform}-${VERSION}"
+    done
   done
+  cp -p "$DIST_DIR/BUILD_INFO" "$out/"
+  (cd "$out" && sha256sum ./* | sed 's#  \./#  #' >SHA256SUMS)
 }
 
-# One file for both groups -- GitHub release assets are a flat namespace.
 compute_checksums() {
   require_dist_populated
-  (cd "$DIST_DIR" && sha256sum tarballs/* binaries/* | sed -E 's#  (tarballs|binaries)/#  #' >SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS)
+  (cd "$DIST_DIR" && sha256sum tarballs/* binaries/*/* >SHA256SUMS.tmp && mv SHA256SUMS.tmp SHA256SUMS)
   cat "$DIST_DIR/SHA256SUMS"
 }

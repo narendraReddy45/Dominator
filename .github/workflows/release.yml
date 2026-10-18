@@ -49,11 +49,12 @@ jobs:
           name: dominator-build
           path: dist
 
-      - name: Stamp version into filenames
-        run: .github/scripts/release/run.sh stamp-version
-
       - name: Checksums
         run: .github/scripts/release/run.sh checksums
+
+      # Before attestation, so its SHA256SUMS is attested too.
+      - name: Stage GitHub assets
+        run: .github/scripts/release/run.sh stage-github
 
       # One glob: combined patterns can silently drop matches (attest-build-provenance#133).
       - name: Attest build provenance
