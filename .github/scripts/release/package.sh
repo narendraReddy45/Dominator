@@ -3,11 +3,11 @@ source "$(dirname "${BASH_SOURCE[0]}")/constants.sh"
 
 # strict hard-fails on a missing binary instead of warning (Linux only).
 collect_client_binaries() {
-  local src="$1" suffix="$2" strict="${3:-}" name
-  mkdir -p "$DIST_DIR/binaries"
+  local src="$1" platform="$2" strict="${3:-}" name
+  mkdir -p "$DIST_DIR/binaries/$platform"
   for name in "${CLIENTS[@]}"; do
     if [[ -f "$src/$name" ]]; then
-      cp -p "$src/$name" "$DIST_DIR/binaries/${name}-${suffix}"
+      cp -p "$src/$name" "$DIST_DIR/binaries/$platform/$name"
     elif [[ -n "$strict" ]]; then
       echo "::error::expected client binary '$name' not found in $src"
       exit 1
