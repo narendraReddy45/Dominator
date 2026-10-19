@@ -29,7 +29,7 @@ publish_github() {
 publish_jfrog() {
   require_dist_populated
   local match_count
-  match_count="$(jf rt search "${JFROG_REPO}/dominator/${VERSION}/BUILD_INFO" | jq 'length')"
+  match_count="$(jf rt search "${JFROG_REPO}/dominator/${VERSION}/SHA256SUMS" | jq 'length')"
   if [[ "$match_count" != "0" ]]; then
     echo "::notice::artifacts already exist under ${JFROG_REPO}/dominator/${VERSION}/ -- nothing to publish"
     return
@@ -42,9 +42,8 @@ publish_jfrog() {
     platform="$(basename "$dir")"
     jf rt upload "$DIST_DIR/binaries/$platform/*" "${JFROG_REPO}/dominator/${VERSION}/binaries/$platform/" --flat=true --fail-no-op
   done
+  # SHA256SUMS is the completion marker the check above trusts -- upload it last.
   jf rt upload "$DIST_DIR/SHA256SUMS" "${JFROG_REPO}/dominator/${VERSION}/" --flat=true --fail-no-op
-  # BUILD_INFO is the completion marker the check above trusts -- upload it last.
-  jf rt upload "$DIST_DIR/BUILD_INFO" "${JFROG_REPO}/dominator/${VERSION}/" --flat=true --fail-no-op
   # latest/ is a pointer to the current version, overwritten each release.
   local pointer
   pointer="$(mktemp)"

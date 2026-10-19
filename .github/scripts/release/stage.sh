@@ -26,7 +26,6 @@ stage_github_assets() {
       cp -p "$f" "$out/$(basename "$f")-${platform}-${VERSION}"
     done
   done
-  cp -p "$DIST_DIR/BUILD_INFO" "$out/"
   (cd "$out" && sha256sum ./* | sed 's#  \./#  #' >SHA256SUMS)
 }
 

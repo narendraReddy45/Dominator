@@ -24,9 +24,6 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      - name: Generate build info
-        run: make generate # //go:embed needs BUILD_INFO before go test/go build
-
       - name: Run tests
         run: make test
 
