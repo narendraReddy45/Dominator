@@ -15,6 +15,7 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/objectserver/cachingreader"
 	"github.com/Cloud-Foundations/Dominator/lib/srpc"
 	"github.com/Cloud-Foundations/Dominator/lib/tags"
+	"github.com/Cloud-Foundations/Dominator/lib/types"
 	proto "github.com/Cloud-Foundations/Dominator/proto/hypervisor"
 )
 
@@ -79,6 +80,7 @@ type Manager struct {
 }
 
 type StartOptions struct {
+	BootLogMaximumBytes  types.Bytes
 	BridgeMap            map[string]net.Interface // Key: interface name.
 	DhcpServer           DhcpServer
 	IdentityProvider     string
@@ -324,6 +326,11 @@ func (m *Manager) ExportLocalVm(authInfo *srpc.AuthInformation,
 	return m.exportLocalVm(authInfo, request)
 }
 
+func (m *Manager) FetchImage(searchName string, imageTimeout time.Duration) (
+	proto.FetchImageResponse, error) {
+	return m.fetchImage(searchName, imageTimeout)
+}
+
 // Flush will flush any pending state changes to persistent storage (e.g.
 // object cache LRU).
 func (m *Manager) Flush() error {
@@ -371,6 +378,10 @@ func (m *Manager) GetVmAccessToken(ipAddr net.IP,
 
 func (m *Manager) GetVmBootLog(ipAddr net.IP) (io.ReadCloser, error) {
 	return m.getVmBootLog(ipAddr)
+}
+
+func (m *Manager) GetVmBootLogSize(ipAddr net.IP) (uint64, error) {
+	return m.getVmBootLogSize(ipAddr)
 }
 
 func (m *Manager) GetVmCID(ipAddr net.IP) (uint32, error) {

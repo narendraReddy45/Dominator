@@ -65,7 +65,8 @@ func (stream *imageStreamType) build(b *Builder, client srpc.ClientI,
 		})
 	}
 	img, err := buildImageFromManifest(ctx, client, manifestDirectory, request,
-		bindMounts, stream, gitInfo, b.mtimesCopyFilter, buildLog, b.logger)
+		bindMounts, stream, gitInfo, b.mtimesCopyFilter,
+		b.enableDefaultInheritance, buildLog, b.logger)
 	if err != nil {
 		return nil, err
 	}
@@ -90,7 +91,7 @@ func (stream *imageStreamType) getenv() map[string]string {
 			return ""
 		})
 	}
-	envTable["ARCH"] = runtime.GOARCH
+	envTable["ARCH"] = runtime.GOARCH // Need this here for variable expansion.
 	envTable["IMAGE_STREAM"] = stream.name
 	envTable["IMAGE_STREAM_DIRECTORY_NAME"] = filepath.Dir(stream.name)
 	envTable["IMAGE_STREAM_LEAF_NAME"] = filepath.Base(stream.name)
@@ -252,9 +253,12 @@ func (stream *imageStreamType) getSourceImage(b *Builder, buildLog io.Writer) (
 	if err := json.Read(bytes.NewReader(manifestBytes), &manifest); err != nil {
 		return "", "", nil, nil, nil, err
 	}
+	vGetter := variablesGetter(stream.getenv()).copy()
+	expandedVariables := expandVariables(manifest.Variables, vGetter)
+	vGetter.merge(expandedVariables)
 	sourceImageName := expand.Expression(manifest.SourceImage,
 		func(name string) string {
-			return stream.getenv()[name]
+			return vGetter[name]
 		})
 	doRemove = false
 	return manifestDirectory, sourceImageName, gitInfo, manifestBytes,
@@ -278,13 +282,14 @@ func buildImageFromManifest(ctx context.Context, client srpc.ClientI,
 	manifestDir string, request proto.BuildImageRequest,
 	bindMounts []bindMountType, envGetter environmentGetter,
 	gitInfo *gitInfoType, mtimesCopyFilter *filter.Filter,
-	buildLog buildLogger, logger log.Logger) (*image.Image, error) {
+	enableDefaultInheritance bool, buildLog buildLogger,
+	logger log.Logger) (*image.Image, error) {
 	// First load all the various manifest files (fail early on error).
 	computedFilesList, addComputedFiles, err := loadComputedFiles(manifestDir)
 	if err != nil {
 		return nil, err
 	}
-	imageFilter, addFilter, err := loadFilter(manifestDir)
+	imageFilter, addFilter, sparseFilter, err := loadFilter(manifestDir)
 	if err != nil {
 		return nil, err
 	}
@@ -309,6 +314,11 @@ func buildImageFromManifest(ctx context.Context, client srpc.ClientI,
 	if err != nil {
 		return nil, err
 	}
+	// Read unexpanded, to pick up the variables the manifest declares.
+	rawManifestConfig, err := readManifestFile(manifestDir, nil)
+	if err != nil {
+		return nil, err
+	}
 	rootDir, err := makeTempDirectory("",
 		strings.Replace(request.StreamName, "/", "_", -1)+".root")
 	if err != nil {
@@ -317,6 +327,9 @@ func buildImageFromManifest(ctx context.Context, client srpc.ClientI,
 	defer os.RemoveAll(rootDir)
 	fmt.Fprintf(buildLog, "Created image working directory: %s\n", rootDir)
 	vGetter := variablesGetter(envGetter.getenv()).copy()
+	expandedVariables := expandVariables(rawManifestConfig.Variables,
+		vGetter)
+	vGetter.merge(expandedVariables)
 	vGetter.merge(request.Variables)
 	if gitInfo != nil {
 		vGetter.add("MANIFEST_GIT_COMMIT_ID", gitInfo.commitId)
@@ -348,21 +361,30 @@ func buildImageFromManifest(ctx context.Context, client srpc.ClientI,
 			}
 		}
 	}
+	// With enableDefaultInheritance, the sourceImage value is inherited only
+	// when no local file is present. An explicit file still overrides, and
+	// .add files merge as before.
 	if addComputedFiles {
 		computedFilesList = util.MergeComputedFiles(
 			manifest.sourceImageInfo.computedFiles, computedFilesList)
+	} else if enableDefaultInheritance && computedFilesList == nil {
+		computedFilesList = manifest.sourceImageInfo.computedFiles
 	}
 	if addFilter {
 		mergeableFilter := &filter.MergeableFilter{}
 		mergeableFilter.Merge(manifest.sourceImageInfo.filter)
 		mergeableFilter.Merge(imageFilter)
 		imageFilter = mergeableFilter.ExportFilter()
+	} else if enableDefaultInheritance && imageFilter == nil && !sparseFilter {
+		imageFilter = manifest.sourceImageInfo.filter
 	}
 	if addTriggers {
 		mergeableTriggers := &triggers.MergeableTriggers{}
 		mergeableTriggers.Merge(manifest.sourceImageInfo.triggers)
 		mergeableTriggers.Merge(imageTriggers)
 		imageTriggers = mergeableTriggers.ExportTriggers()
+	} else if enableDefaultInheritance && imageTriggers == nil {
+		imageTriggers = manifest.sourceImageInfo.triggers
 	}
 	if manifest.mtimesCopyFilter != nil {
 		mtimesCopyFilter = manifest.mtimesCopyFilter
@@ -413,6 +435,7 @@ func buildImageFromManifestAndUpload(ctx context.Context, client srpc.ClientI,
 		},
 		nil,
 		options.MtimesCopyFilter,
+		options.EnableDefaultInheritance,
 		buildLog,
 		logger)
 	if err != nil {
@@ -532,40 +555,77 @@ func loadComputedFiles(manifestDir string) ([]util.ComputedFile, bool, error) {
 		return nil, false, errors.New(
 			"computed-files and computed-files.add files both present")
 	} else if haveComputedFiles {
+		// Return empty slice if empty file.
+		if computedFiles == nil {
+			computedFiles = []util.ComputedFile{}
+		}
 		return computedFiles, false, nil
 	} else {
 		return addComputedFiles, true, nil
 	}
 }
 
-func loadFilter(manifestDir string) (*filter.Filter, bool, error) {
-	imageFilter, err := filter.Load(filepath.Join(manifestDir, "filter"))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, false, err
+func loadOptionalFilter(filename string) (*filter.Filter, error) {
+	f, err := filter.Load(filename)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
 	}
-	if imageFilter != nil {
-		if err := imageFilter.Compile(); err != nil {
-			return nil, false, fmt.Errorf("error compiling filter: %s", err)
+	if err := f.Compile(); err != nil {
+		return nil, fmt.Errorf("error compiling %s: %s",
+			filepath.Base(filename), err)
+	}
+	return f, nil
+}
+
+// loadFilter reads the filter, filter.add and filter.none files in manifestDir.
+// A missing file is not an error. It returns:
+//   - imageFilter: the filter from the filter or filter.add file. It is nil for
+//     a sparse image or when neither file is present.
+//   - isAdd: true if imageFilter came from filter.add, so it merges with the
+//     SourceImage filter.
+//   - isSparse: true if filter.none is present.
+//   - err: set if more than one of the files is present, or if filter.none is
+//     not empty. The other results are zero values in that case.
+func loadFilter(manifestDir string) (
+	imageFilter *filter.Filter, isAdd, isSparse bool, err error) {
+	imageFilter, err = loadOptionalFilter(
+		filepath.Join(manifestDir, "filter"))
+	if err != nil {
+		return nil, false, false, err
+	}
+	addFilter, err := loadOptionalFilter(
+		filepath.Join(manifestDir, "filter.add"))
+	if err != nil {
+		return nil, false, false, err
+	}
+	sparseFilter, err := filter.Load(filepath.Join(manifestDir, "filter.none"))
+	if err != nil && !os.IsNotExist(err) {
+		return nil, false, false, err
+	}
+	if sparseFilter != nil && len(sparseFilter.FilterLines) > 0 {
+		return nil, false, false, errors.New("filter.none file must be empty")
+	}
+	present := 0
+	for _, f := range []*filter.Filter{imageFilter, addFilter, sparseFilter} {
+		if f != nil {
+			present++
 		}
 	}
-	addFilter, err := filter.Load(filepath.Join(manifestDir, "filter.add"))
-	if err != nil && !os.IsNotExist(err) {
-		return nil, false, err
+	if present > 1 {
+		return nil, false, false, errors.New(
+			"only one of filter, filter.add and filter.none files may be present")
 	}
-	if addFilter != nil {
-		if err := addFilter.Compile(); err != nil {
-			return nil, false, fmt.Errorf("error compiling filter.add: %s", err)
-		}
-	}
-	if imageFilter == nil && addFilter == nil {
-		return nil, false, nil
-	} else if imageFilter != nil && addFilter != nil {
-		return nil, false, errors.New(
-			"filter and filter.add files both present")
+	if sparseFilter != nil {
+		return nil, false, true, nil
 	} else if imageFilter != nil {
-		return imageFilter, false, nil
+		return imageFilter, false, false, nil
+	} else if addFilter != nil {
+		return addFilter, true, false, nil
 	} else {
-		return addFilter, true, nil
+		return nil, false, false, nil
 	}
 }
 
