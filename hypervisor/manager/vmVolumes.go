@@ -38,6 +38,34 @@ func (vm *vmInfoType) checkVolumes(grabLock bool) error {
 	return nil
 }
 
+// listVolumePathnames will list all the possible pathnames for the specified
+// volume. If checkPresent is true, only pathnames which are present will be
+// returned.
+func (vm *vmInfoType) listVolumePathnames(volumeIndex uint, checkPresent bool) (
+	[]string, error) {
+	possiblePathnames := []string{vm.VolumeLocations[volumeIndex].Filename}
+	if volumeIndex < 1 {
+		possiblePathnames = append(possiblePathnames,
+			vm.getInitrdPath(),
+			vm.getKernelPath(),
+		)
+	}
+	if !checkPresent {
+		return possiblePathnames, nil
+	}
+	pathnames := make([]string, 0, len(possiblePathnames))
+	for _, pathname := range possiblePathnames {
+		if _, err := os.Stat(pathname); err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return nil, err
+		}
+		pathnames = append(pathnames, pathname)
+	}
+	return pathnames, nil
+}
+
 func (vm *vmInfoType) scanStorage() error {
 	// Build a map of all filenames in VM volume directories.
 	dirnameToFilenames := make(map[string]map[string]struct{})
@@ -78,7 +106,6 @@ func (vm *vmInfoType) scanStorage() error {
 				suffix := filename[len(snapshotBase):]
 				if suffix == "" {
 					snapshots[suffix] = uint64(fi.Size())
-
 				} else if suffix[0] == ':' {
 					snapshots[suffix[1:]] = uint64(fi.Size())
 				}
@@ -109,9 +136,16 @@ func (vm *vmInfoType) scanStorage() error {
 // available storage capacity and ensures the requested volume sizes will fit.
 // This will grab and release the Manager read lock and each VM read lock, and
 // later the VM write lock.
+// Finally, an update message is broadcast. This gives early visibility into VM
+// creation, before volumes are populated.
 func (vm *vmInfoType) setupVolumes(rootVolume proto.Volume,
 	secondaryVolumes []proto.Volume, spreadVolumes bool,
 	storageIndices []uint) error {
+	switch rootVolume.Interface {
+	case proto.VolumeInterfaceDFM:
+		return fmt.Errorf("root volume not supported on interface: %s",
+			rootVolume.Interface)
+	}
 	volumeDirectories, err := vm.manager.getVolumeDirectories(rootVolume,
 		secondaryVolumes, spreadVolumes, storageIndices)
 	if err != nil {
@@ -140,5 +174,6 @@ func (vm *vmInfoType) setupVolumes(rootVolume proto.Volume,
 		vm.VolumeLocations = append(vm.VolumeLocations,
 			proto.LocalVolume{volumeDirectory, filename})
 	}
+	vm.manager.sendVmInfo(vm.ipAddress, &vm.VmInfo)
 	return nil
 }

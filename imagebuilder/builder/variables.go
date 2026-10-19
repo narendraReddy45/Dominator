@@ -2,9 +2,35 @@ package builder
 
 import (
 	"io"
+	"runtime"
 
+	"github.com/Cloud-Foundations/Dominator/lib/expand"
 	"github.com/Cloud-Foundations/Dominator/lib/json"
 )
+
+func archMapper(name string) string {
+	if name == "ARCH" {
+		return runtime.GOARCH
+	}
+	return ""
+}
+
+func expandVariables(variables map[string]string,
+	envGetter environmentGetter) map[string]string {
+	if len(variables) < 1 {
+		return variables
+	}
+	environment := envGetter.getenv()
+	// Expand into a new map, so the iteration order is not significant.
+	expandedVariables := make(map[string]string, len(variables))
+	for key, value := range variables {
+		expandedVariables[key] = expand.Expression(value,
+			func(name string) string {
+				return environment[name]
+			})
+	}
+	return expandedVariables
+}
 
 func (b *Builder) getVariableFunc(
 	extraVariables0, extraVariables1 map[string]string) func(string) string {
@@ -72,6 +98,13 @@ func (vg variablesGetter) copy() variablesGetter {
 }
 
 func (vg variablesGetter) getenv() map[string]string {
+	return vg
+}
+
+func (vg variablesGetter) makeIfNil() variablesGetter {
+	if vg == nil {
+		return make(variablesGetter)
+	}
 	return vg
 }
 

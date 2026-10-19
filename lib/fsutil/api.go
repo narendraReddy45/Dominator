@@ -7,6 +7,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/Cloud-Foundations/Dominator/lib/goroutine"
 	"github.com/Cloud-Foundations/Dominator/lib/log"
 	"github.com/Cloud-Foundations/Dominator/lib/wsyscall"
 )
@@ -18,6 +19,12 @@ const (
 	PrivateFilePerms = wsyscall.S_IRUSR | wsyscall.S_IWUSR
 	PublicFilePerms  = PrivateFilePerms | wsyscall.S_IRGRP | wsyscall.S_IROTH
 )
+
+type FilesOpener struct {
+	cancel    chan<- struct{}
+	pathnames []string
+	results   <-chan openFile
+}
 
 var (
 	ErrorChecksumMismatch = errors.New("checksum mismatch")
@@ -69,6 +76,12 @@ func CopyFile(destFilename, sourceFilename string, mode os.FileMode) error {
 func CopyFileExclusive(destFilename, sourceFilename string,
 	mode os.FileMode) error {
 	return copyFile(destFilename, sourceFilename, mode, true)
+}
+
+// CopyFileTimes will copy the modification and access times from the
+// sourceFilename to the destFilename.
+func CopyFileTimes(destFilename, sourceFilename string) error {
+	return copyFileTimes(destFilename, sourceFilename)
 }
 
 // CopyToFile will create a new file, write length bytes from reader to a
@@ -168,7 +181,8 @@ func GetTreeSize(dirname string) (uint64, error) {
 }
 
 // LoadLines will open a file and read lines from it. Comment lines (i.e. lines
-// beginning with '#') are skipped.
+// beginning with '#') are skipped. If filename is '-' then lines are read from
+// the standard input.
 func LoadLines(filename string) ([]string, error) {
 	return loadLines(filename)
 }
@@ -209,6 +223,25 @@ func LoopbackSetupAndWaitForPartition(filename, partition string,
 // command-line programme "chattr -ai pathname...".
 func MakeMutable(pathname ...string) error {
 	return makeMutable(pathname...)
+}
+
+// OpenFiles will use the provided Goroutine to open a list of files, placing
+// the results in a queue. If the Goroutine is nil, a new goroutine is created.
+// This can be used for background opening of files while processing opened
+// files.
+func OpenFiles(g *goroutine.Goroutine, pathnames []string,
+	queueSize uint) *FilesOpener {
+	return openFiles(g, pathnames, queueSize)
+}
+
+// Cancel will cancel the opening of files.
+func (fo *FilesOpener) Cancel() {
+	close(fo.cancel)
+}
+
+// OpenNext will return the next opened file or an error.
+func (fo *FilesOpener) OpenNext() (*os.File, error) {
+	return fo.openNext()
 }
 
 // ReadDirnames will open the directory named dirname and will read the entries

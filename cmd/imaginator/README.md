@@ -53,6 +53,20 @@ special variables which may be used for variable expansion. These are typically
 used to store secrets for accessing Git repositories which require
 authentication. Each line should contain a single `NAME=Value` entry.
 
+### Default inheritance
+By default, an *[image manifest](../../user-guide/image-manifest.md)* inherits  
+*computed-files*, *filters*, or *triggers* from the *SourceImage* only if the  
+corresponding `.add` file is included (for example, `filter.add`).
+When the *imaginator* is started with the `-enableDefaultInheritance` flag,  
+this behavior becomes more permissive. If a manifest includes neither the base  
+file (such as `filter`) nor its `.add` variant, the value from the *SourceImage*  
+is inherited automatically.
+If `filter` or `filter.add` (and the equivalents for *computed-files* and  
+*triggers*) are present, they retain their existing meanings. The flag only  
+affects cases where none of the filter files is defined. A `filter.none` file,
+which must be empty, gives a sparse image (a nil filter) with or without the
+flag, and the *SourceImage* filter is never inherited in that case.
+
 ## Security
 RPC access is restricted using TLS client authentication. *Imaginator* expects
 a root certificate in the file `/etc/ssl/CA.pem` which it trusts to sign
@@ -69,10 +83,13 @@ the *imaginator* to build an image.
 The main configuration URL points to a JSON encoded file that describes all the
 *image streams* and how to build them. The top-level JSON object defines the
 following fields:
-- `BindMounts`: a list of directories that will be bind-mounted into the build
-                environments
+- `BindMounts`: a list of directories that will be bind-mounted read-only into
+                the build environments
 - `BootstrapStreams`: a table of *bootstrap image* stream names and their
-  		      respective configurations
+  		      respective configurations. If `$ARCH` is present in the
+                      stream name it is expanded to the value of
+                      `runtime.GOARCH`     
+- `Cache`: optional cache that may be bind-mounted into the build environments
 - `ImageStreamsCheckInterval`: the interval between checks for updated image
                                streams
 - `ImageStreamsToAutoRebuild`: an array of *image stream* names that should be
@@ -101,8 +118,9 @@ Each *bootstrap stream* is configured by a JSON object with the following
 fields:
 - `BootstrapCommand`: an array of strings containing the bootstrap script to run
   		      to generate the image contents (typically `debootstrap`
-		      and `yumbootstrap`). The `$dir` variable expands to the
-		      root directory of the image to build
+		      and `yumbootstrap`). The `$ARCH` variable expands to the
+                      value of `runtime.GOARCH` and the `$dir` variable expands
+                      to the root directory of the image to build
 - `FilterLines`: an array of regular expressions matching files which should not
   		 be included in the image
 - `ImageFilterUrl`: a URL from which a filter lines can be read. The filter will
@@ -111,7 +129,28 @@ fields:
                   tags will be attached to the image
 - `ImageTriggersUrl`: a URL from which JSON-encoded triggers can be read. The
                       triggers will be attached to the image
+- `Owners`: optional object with a list of `Groups` and `Users` who will have
+            ownership of the built images
 - `PackagerType`: the name of the packager type to use
+
+### Cache configuration
+It's considered an anti-pattern to use the *Imaginator* to compile code; instead
+code should be separately pre- compiled into binary artefacts and added when
+building images. However, in some cases - such as extra kernel drivers - it may
+be difficult to pre-compile for the kernel being added to an image. In this case
+it may be simpler to compile during the image build. A cache can be used to
+avoid re-building if an appropriate artefact has already been built.
+
+The cache configuration is a JSON object with the following fields:
+- `BaseDirectory`: the base directory of the cache
+- `MountPoint`: the directory that the cache will be mounted into the build
+                environments
+- `SizeLimit`: the size limit (in bytes) of the cache for each image stream. The
+               oldest files are deleted when the limit is exceeded
+
+The name of the image stream is appended to the `BaseDirectory` and this
+sub-directory of the cache is mounted in the build environments. This provides
+each image stream with it's own subsection of the cache.
 
 ### ImageStreams URL
 This is a JSON encoded configuration file listing all the user-defined *image
@@ -120,6 +159,9 @@ streams*. It contains the following top-level fields:
                     *image stream* names and their respective configurations
 - `Streams`:  this contains a table of *image stream* names and their
               respective configurations
+
+The `$ARCH` variable in the pattern strings or stream names expands to the value
+of `runtime.GOARCH`.
 
 The configuration for an *image stream* is a JSON object with the following
 fields:

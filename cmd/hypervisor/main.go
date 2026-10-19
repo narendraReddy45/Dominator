@@ -25,6 +25,7 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/net"
 	"github.com/Cloud-Foundations/Dominator/lib/srpc"
 	"github.com/Cloud-Foundations/Dominator/lib/srpc/setupserver"
+	"github.com/Cloud-Foundations/Dominator/lib/types"
 	"github.com/Cloud-Foundations/tricorder/go/tricorder"
 )
 
@@ -43,6 +44,9 @@ type flushLogger interface {
 }
 
 var (
+	allowUnauthenticatedReads = flag.Bool("allowUnauthenticatedReads", false,
+		"If true, allow unauthenticated access to read-only methods")
+	bootLogMaximumSize      = flagutil.Size(1 << 20)
 	dhcpServerOnBridgesOnly = flag.Bool("dhcpServerOnBridgesOnly", false,
 		"If true, run the DHCP server on bridge interfaces only")
 	identityProvider = flag.String("identityProvider", "",
@@ -56,6 +60,8 @@ var (
 		"Interval between checks for lock timeouts")
 	lockLogTimeout = flag.Duration("lockLogTimeout", 5*time.Second,
 		"Timeout before logging that a lock has been held too long")
+	localImagesDirectory = flag.String("localImagesDirectory", "",
+		"Optional directory where local images can be fetched from")
 	networkBootImage = flag.String("networkBootImage", "pxelinux.%d",
 		"Name of boot image passed via DHCP option")
 	objectCacheDirectory = flag.String("objectCacheDirectory", "",
@@ -76,6 +82,8 @@ var (
 )
 
 func init() {
+	flag.Var(&bootLogMaximumSize, "bootLogMaximumSize",
+		"maximum size of boot log")
 	flag.Var(&objectCacheSize, "objectCacheSize",
 		"maximum size of object cache")
 	flag.Var(&volumeDirectories, "volumeDirectories",
@@ -206,12 +214,14 @@ func run() {
 		logger.Fatalf("Cannot start tftpboot server: %s\n", err)
 	}
 	managerObj, err := manager.New(manager.StartOptions{
+		BootLogMaximumBytes:  types.Bytes(bootLogMaximumSize),
 		BridgeMap:            bridgeMap,
 		DhcpServer:           dhcpServer,
 		IdentityProvider:     *identityProvider,
 		ImageServerAddress:   imageServerAddress,
 		LockCheckInterval:    *lockCheckInterval,
 		LockLogTimeout:       *lockLogTimeout,
+		LocalImagesDirectory: *localImagesDirectory,
 		Logger:               logger,
 		ObjectCacheDirectory: *objectCacheDirectory,
 		ObjectCacheBytes:     uint64(objectCacheSize),
@@ -232,8 +242,16 @@ func run() {
 		logger.Println("No bridges found: entering log-only mode")
 	} else {
 		httpd.AddHtmlWriter(dhcpServer)
-		rpcHtmlWriter, err := rpcd.Setup(managerObj, dhcpServer, tftpbootServer,
-			logger)
+		rpcHtmlWriter, err := rpcd.Setup(
+			rpcd.Config{
+				AllowUnauthenticatedReads: *allowUnauthenticatedReads,
+			},
+			rpcd.Params{
+				DhcpServer:     dhcpServer,
+				Logger:         logger,
+				Manager:        managerObj,
+				TftpbootServer: tftpbootServer,
+			})
 		if err != nil {
 			logger.Fatalf("Cannot start rpcd: %s\n", err)
 		}

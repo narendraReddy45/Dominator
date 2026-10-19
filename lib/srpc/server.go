@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -36,6 +37,7 @@ const (
 	jsonTlsRpcPath = "/_SRPC_/TLS/JSON"
 
 	getHostnamePath       = rpcPath + "getHostname"
+	getServiceArchPath    = rpcPath + "getServiceArch"
 	listMethodsPath       = rpcPath + "listMethods"
 	listPublicMethodsPath = rpcPath + "listPublicMethods"
 
@@ -55,10 +57,12 @@ type methodWrapper struct {
 	fn                            reflect.Value
 	requestType                   reflect.Type
 	responseType                  reflect.Type
+	metricsMutex                  sync.Mutex
 	failedCallsDistribution       *tricorder.CumulativeDistribution
 	failedRRCallsDistribution     *tricorder.CumulativeDistribution
 	numDeniedCalls                uint64
 	numPermittedCalls             uint64
+	numRunningCalls               uint64
 	successfulCallsDistribution   *tricorder.CumulativeDistribution
 	successfulRRCallsDistribution *tricorder.CumulativeDistribution
 }
@@ -109,6 +113,7 @@ func init() {
 	flag.Var(&srpcTrustedUsers, "srpcTrustedUsers",
 		"List of users trusted for all method access")
 	http.HandleFunc(getHostnamePath, getHostnameHttpHandler)
+	http.HandleFunc(getServiceArchPath, getServiceArchHttpHandler)
 	http.HandleFunc(rpcPath, gobUnsecuredHttpHandler)
 	http.HandleFunc(tlsRpcPath, gobTlsHttpHandler)
 	http.HandleFunc(jsonRpcPath, jsonUnsecuredHttpHandler)
@@ -307,6 +312,11 @@ func (m *methodWrapper) registerMetrics(dir *tricorder.DirectorySpec) error {
 	if err != nil {
 		return err
 	}
+	err = dir.RegisterMetric("num-running-calls", &m.numRunningCalls,
+		units.None, "number of running calls to method")
+	if err != nil {
+		return err
+	}
 	m.successfulCallsDistribution = bucketer.NewCumulativeDistribution()
 	err = dir.RegisterMetric("successful-call-durations",
 		m.successfulCallsDistribution, units.Millisecond,
@@ -350,6 +360,10 @@ func getHostnameHttpHandler(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 	fmt.Fprintln(w, hostname)
+}
+
+func getServiceArchHttpHandler(w http.ResponseWriter, _ *http.Request) {
+	fmt.Fprintln(w, runtime.GOARCH)
 }
 
 func gobTlsHttpHandler(w http.ResponseWriter, req *http.Request) {
@@ -638,19 +652,18 @@ func (conn *Conn) findMethod(serviceMethod string) (*methodWrapper, error) {
 	if !ok {
 		return nil, errors.New(serviceName + ": unknown method: " + methodName)
 	}
-	if conn.allowMethodPowers &&
-		conn.checkMethodAccess(serviceMethod) {
-		conn.haveMethodAccess = true
-	} else if conn.allowMethodPowers &&
-		receiver.grantMethod(serviceName, conn.GetAuthInformation()) {
-		conn.haveMethodAccess = true
-	} else if method.public && conn.username != "" {
-		conn.haveMethodAccess = false
-	} else if method.unauthenticatedPermitted {
-		conn.haveMethodAccess = false
-	} else {
-		conn.haveMethodAccess = false
+	grantMethod := func(_ string, authInfo *AuthInformation) bool {
+		return receiver.grantMethod(serviceName, authInfo)
+	}
+	var authorised bool
+	authorised, conn.haveMethodAccess = checkAuthorisation(serviceMethod,
+		conn.getAuthInformation(), conn.permittedMethods,
+		conn.allowMethodPowers, grantMethod, method.public,
+		method.unauthenticatedPermitted)
+	if !authorised {
+		method.metricsMutex.Lock()
 		method.numDeniedCalls++
+		method.metricsMutex.Unlock()
 		return nil, ErrorAccessToMethodDenied
 	}
 	authInfo := conn.GetAuthInformation()
@@ -664,39 +677,84 @@ func (conn *Conn) findMethod(serviceMethod string) (*methodWrapper, error) {
 
 // checkMethodAccess implements the built-in authorisation checks. It returns
 // true if the method is permitted, else false if denied.
-func (conn *Conn) checkMethodAccess(serviceMethod string) bool {
-	if conn.permittedMethods == nil {
+func checkMethodAccess(serviceMethod string, authInfo *AuthInformation,
+	permittedMethods map[string]struct{}) bool {
+	if permittedMethods == nil {
 		return true
 	}
-	for sm := range conn.permittedMethods {
+	for sm := range permittedMethods {
 		if matched, _ := filepath.Match(sm, serviceMethod); matched {
 			return true
 		}
 	}
-	if conn.username != "" {
-		if _, ok := srpcTrustedUsers[conn.username]; ok {
+	if authInfo != nil && authInfo.Username != "" {
+		if _, ok := srpcTrustedUsers[authInfo.Username]; ok {
 			return true
 		}
 		if len(srpcTrustedGroups) > 0 {
 			for _, group := range srpcTrustedGroups {
-				if _, ok := conn.groupList[group]; ok {
+				if _, ok := authInfo.GroupList[group]; ok {
 					return true
 				}
 			}
 		}
 		smallStackOwners := getSmallStackOwners()
 		if smallStackOwners != nil {
-			if _, ok := smallStackOwners.users[conn.username]; ok {
+			if _, ok := smallStackOwners.users[authInfo.Username]; ok {
 				return true
 			}
 			for _, group := range smallStackOwners.groups {
-				if _, ok := conn.groupList[group]; ok {
+				if _, ok := authInfo.GroupList[group]; ok {
 					return true
 				}
 			}
 		}
 	}
 	return false
+}
+
+// checkAuthorisation returns true if the call to serviceMethod is authorised,
+// and a second true if that came from method powers rather than the method
+// being public or unauthenticated.
+func checkAuthorisation(serviceMethod string, authInfo *AuthInformation,
+	permittedMethods map[string]struct{}, allowMethodPowers bool,
+	grantMethod func(serviceMethod string, authInfo *AuthInformation) bool,
+	isPublic, isUnauthenticated bool) (bool, bool) {
+	if allowMethodPowers &&
+		checkMethodAccess(serviceMethod, authInfo, permittedMethods) {
+		return true, true
+	}
+	if allowMethodPowers &&
+		grantMethod != nil && grantMethod(serviceMethod, authInfo) {
+		return true, true
+	}
+	if isPublic && authInfo != nil && authInfo.Username != "" {
+		return true, false
+	}
+	if isUnauthenticated {
+		return true, false
+	}
+	return false, false
+}
+
+// checkTlsAuthorisation runs checkAuthorisation for a client with the given TLS
+// state. It returns the client's authentication information and true if the
+// call is authorised, or an error if the certificate cannot be decoded.
+func checkTlsAuthorisation(serviceMethod string, state tls.ConnectionState,
+	allowMethodPowers, isPublic bool) (*AuthInformation, bool, error) {
+	username, permittedMethods, groupList, err := getAuth(state)
+	if err != nil {
+		return nil, false, err
+	}
+	authInfo := &AuthInformation{
+		GroupList: groupList,
+		Username:  username,
+	}
+	authorised, haveMethodAccess := checkAuthorisation(serviceMethod,
+		authInfo, permittedMethods, allowMethodPowers, defaultGrantMethod,
+		isPublic, false)
+	authInfo.HaveMethodAccess = haveMethodAccess
+	return authInfo, authorised, nil
 }
 
 func listMethodsHttpHandler(w http.ResponseWriter, req *http.Request) {
@@ -749,7 +807,10 @@ func tlsHandshake(conn *tls.Conn) error {
 }
 
 func (m *methodWrapper) call(conn *Conn, makeCoder coderMaker) error {
+	m.metricsMutex.Lock()
 	m.numPermittedCalls++
+	m.numRunningCalls++
+	m.metricsMutex.Unlock()
 	startTime := time.Now()
 	err := m._call(conn, makeCoder)
 	timeTaken := time.Since(startTime)
@@ -758,6 +819,9 @@ func (m *methodWrapper) call(conn *Conn, makeCoder coderMaker) error {
 	} else {
 		m.failedCallsDistribution.Add(timeTaken)
 	}
+	m.metricsMutex.Lock()
+	m.numRunningCalls--
+	m.metricsMutex.Unlock()
 	return err
 }
 

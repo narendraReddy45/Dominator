@@ -31,6 +31,7 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/objectserver"
 	"github.com/Cloud-Foundations/Dominator/lib/types"
 	"github.com/Cloud-Foundations/Dominator/lib/wsyscall"
+	"github.com/Cloud-Foundations/Dominator/proto/hypervisor"
 	"github.com/Cloud-Foundations/Dominator/proto/installer"
 )
 
@@ -92,9 +93,16 @@ func getBootDirectory(fs *filesystem.FileSystem) (
 	if !ok {
 		return nil, errors.New("missing /boot directory")
 	}
-	bootDirectory, ok := dirent.Inode().(*filesystem.DirectoryInode)
+	inode := dirent.Inode()
+	if inode == nil {
+		_, ok := fs.InodeTable[dirent.InodeNumber]
+		return nil,
+			fmt.Errorf("no inode for /boot dirent, inum: %d, in table: %v",
+				dirent.InodeNumber, ok)
+	}
+	bootDirectory, ok := inode.(*filesystem.DirectoryInode)
 	if !ok {
-		return nil, errors.New("/boot is not a directory")
+		return nil, fmt.Errorf("/boot is not a directory, type: %T", inode)
 	}
 	return bootDirectory, nil
 }
@@ -253,7 +261,11 @@ func makeAndWriteRoot(fs *filesystem.FileSystem,
 			kernelOptions = append(kernelOptions, options.ExtraKernelOptions)
 		}
 		kernelOptionsString := strings.Join(kernelOptions, " ")
-		bootInfo, err = getBootInfo(fs, options.RootLabel, kernelOptionsString)
+		bootInfo, err = getBootInfo(fs, MakeKernelOptionsParams{
+			ArchitectureType: options.ArchitectureType,
+			ExtraOptions:     kernelOptionsString,
+			RootDevice:       "LABEL=" + options.RootLabel,
+		})
 		if err != nil {
 			return err
 		}
@@ -351,7 +363,7 @@ func makeAndWriteRoot(fs *filesystem.FileSystem,
 			}
 		}
 		err := bootInfo.installBootloader(bootDevice, rootMount,
-			options.RootLabel, options.DoChroot, logger)
+			options.DoChroot, logger)
 		if err != nil {
 			if efiMount != "" {
 				wsyscall.Unmount(efiMount, 0)
@@ -376,17 +388,21 @@ func makeAndWriteRoot(fs *filesystem.FileSystem,
 	return nil
 }
 
-func makeBootable(fs *filesystem.FileSystem,
-	deviceName, rootLabel, rootDir, kernelOptions string,
-	doChroot bool, logger log.DebugLogger) error {
-	if err := writeRootFstabEntry(rootDir, rootLabel); err != nil {
+func makeBootable(params MakeBootableParams) error {
+	err := writeRootFstabEntry(params.RootDirectory, params.RootLabel)
+	if err != nil {
 		return err
 	}
-	if bootInfo, err := getBootInfo(fs, rootLabel, kernelOptions); err != nil {
+	bootInfo, err := getBootInfo(params.FileSystem, MakeKernelOptionsParams{
+		ArchitectureType: params.ArchitectureType,
+		ExtraOptions:     params.KernelOptions,
+		RootDevice:       "LABEL=" + params.RootLabel,
+	})
+	if err != nil {
 		return err
 	} else {
-		return bootInfo.installBootloader(deviceName, rootDir, rootLabel,
-			doChroot, logger)
+		return bootInfo.installBootloader(params.DeviceName,
+			params.RootDirectory, params.DoChroot, params.Logger)
 	}
 }
 
@@ -490,6 +506,18 @@ func makeExtraFileSystems(bootDevice, partitionPrefix string,
 	return nil
 }
 
+func makeKernelOptions(params MakeKernelOptionsParams) string {
+	var serialPort string
+	switch params.ArchitectureType {
+	case hypervisor.ArchitectureTypeAmd64, hypervisor.ArchitectureTypeAuto:
+		serialPort = "ttyS0"
+	case hypervisor.ArchitectureTypeArm64:
+		serialPort = "ttyAMA0"
+	}
+	return fmt.Sprintf("root=%s ro console=tty0 console=%s,115200n8 %s",
+		params.RootDevice, serialPort, params.ExtraOptions)
+}
+
 func sanitiseInput(ch rune) rune {
 	if 'a' <= ch && ch <= 'z' {
 		return ch
@@ -514,16 +542,16 @@ func writeOverlayFiles(mountPoint string,
 	return nil
 }
 
-func getBootInfo(fs *filesystem.FileSystem, rootLabel string,
-	extraKernelOptions string) (*BootInfoType, error) {
+func getBootInfo(fs *filesystem.FileSystem, params MakeKernelOptionsParams) (
+	*BootInfoType, error) {
 	bootDirectory, err := getBootDirectory(fs)
 	if err != nil {
 		return nil, err
 	}
 	bootInfo := &BootInfoType{
-		BootDirectory: bootDirectory,
-		KernelOptions: MakeKernelOptions("LABEL="+rootLabel,
-			extraKernelOptions),
+		ArchitectureType: params.ArchitectureType,
+		BootDirectory:    bootDirectory,
+		KernelOptions:    MakeKernelOptionsWithParams(params),
 	}
 	for _, dirent := range bootDirectory.EntryList {
 		if strings.HasPrefix(dirent.Name, "initrd.img-") ||
@@ -546,7 +574,7 @@ func getBootInfo(fs *filesystem.FileSystem, rootLabel string,
 }
 
 func (bootInfo *BootInfoType) installBootloader(deviceName string,
-	rootDir, rootLabel string, doChroot bool, logger log.DebugLogger) error {
+	rootDir string, doChroot bool, logger log.DebugLogger) error {
 	startTime := time.Now()
 	mountTable, err := mounts.GetMountTable()
 	if err != nil {
@@ -590,8 +618,16 @@ func (bootInfo *BootInfoType) installBootloader(deviceName string,
 		cmd.Args = append(cmd.Args,
 			"--efi-directory="+efiDir,
 			"--removable", // Needed for loop devices.
-			"--target=x86_64-efi",
 		)
+		switch bootInfo.ArchitectureType {
+		case hypervisor.ArchitectureTypeAmd64:
+			cmd.Args = append(cmd.Args, "--target=x86_64-efi")
+		case hypervisor.ArchitectureTypeArm64:
+			cmd.Args = append(cmd.Args, "--target=arm64-efi")
+		default:
+			return fmt.Errorf("unsupported GRUB EFI target for arch: %s",
+				bootInfo.ArchitectureType)
+		}
 		if isGrub2 {
 			// Likely RedHat or derivative: work around their controlling
 			// behaviour.
@@ -600,9 +636,13 @@ func (bootInfo *BootInfoType) installBootloader(deviceName string,
 			)
 		}
 	} else {
-		cmd.Args = append(cmd.Args,
-			"--target=i386-pc",
-		)
+		switch bootInfo.ArchitectureType {
+		case hypervisor.ArchitectureTypeAmd64:
+			cmd.Args = append(cmd.Args, "--target=i386-pc")
+		default:
+			return fmt.Errorf("unsupported GRUB target for arch: %s",
+				bootInfo.ArchitectureType)
+		}
 	}
 	if doChroot {
 		cmd.Dir = "/"
@@ -898,6 +938,9 @@ func writeRaw(fs *filesystem.FileSystem,
 	objectsGetter objectserver.ObjectsGetter, rawFilename string,
 	perm os.FileMode, tableType mbr.TableType, options WriteRawOptions,
 	logger log.DebugLogger) error {
+	if options.ArchitectureType == hypervisor.ArchitectureTypeAuto {
+		options.ArchitectureType = hypervisor.ArchitectureTypeRuntime
+	}
 	if options.PartitionWaitTimeout < time.Millisecond {
 		options.PartitionWaitTimeout = 2 * time.Second
 	}

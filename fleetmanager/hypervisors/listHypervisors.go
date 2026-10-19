@@ -13,7 +13,8 @@ import (
 	"github.com/Cloud-Foundations/Dominator/lib/tags"
 	"github.com/Cloud-Foundations/Dominator/lib/tags/tagmatcher"
 	"github.com/Cloud-Foundations/Dominator/lib/url"
-	proto "github.com/Cloud-Foundations/Dominator/proto/fleetmanager"
+	fm_proto "github.com/Cloud-Foundations/Dominator/proto/fleetmanager"
+	hyper_proto "github.com/Cloud-Foundations/Dominator/proto/hypervisor"
 )
 
 const (
@@ -89,6 +90,7 @@ func writeHypervisorTotalsStats(hypervisors []*hypervisorType, location string,
 		"",
 		"",
 		"",
+		"",
 		fmt.Sprintf("%s/%d", format.FormatMilli(milliCPUsAllocated), cpusTotal),
 		fmt.Sprintf("%d/%d %sB",
 			memoryInMiBAllocated<<20>>memoryShift,
@@ -106,6 +108,7 @@ func writeHypervisorTotalsStats(hypervisors []*hypervisorType, location string,
 		"",
 		"",
 		"",
+		"",
 		fmt.Sprintf("%d%%",
 			safeDivide(milliCPUsAllocated, uint64(cpusTotal))/10),
 		fmt.Sprintf("%d%%",
@@ -116,11 +119,11 @@ func writeHypervisorTotalsStats(hypervisors []*hypervisorType, location string,
 }
 
 func (h *hypervisorType) getHealthStatus(url bool) string {
-	healthStatus := h.probeStatus.String()
-	if h.probeStatus == probeStatusConnected {
+	healthStatus := h.ProbeStatus.String()
+	if h.ProbeStatus == fm_proto.ProbeStatusConnected {
 		if h.healthStatus != "" {
 			healthStatus = h.healthStatus
-		} else if h.disabled {
+		} else if h.Disabled {
 			healthStatus = "disabled"
 		}
 	}
@@ -139,6 +142,10 @@ func (h *hypervisorType) getNumVMs() uint {
 
 func (h *hypervisorType) writeStats(tw *html.TableWriter) uint {
 	machine := &h.Machine
+	var architectureType string
+	if machine.ArchitectureType != hyper_proto.ArchitectureTypeAuto {
+		architectureType = machine.ArchitectureType.String()
+	}
 	machineType := machine.Tags["Type"]
 	if machineTypeURL := machine.Tags["TypeURL"]; machineTypeURL != "" {
 		machineType = `<a href="` + machineTypeURL + `">` + machineType +
@@ -169,6 +176,7 @@ func (h *hypervisorType) writeStats(tw *html.TableWriter) uint {
 		serialNumber,
 		fmt.Sprintf("<a href=\"listHypervisors?location=%s\">%s</a>",
 			h.location, h.location),
+		architectureType,
 		machineType,
 		fmt.Sprintf("%s/%d",
 			format.FormatMilli(h.AllocatedMilliCPUs), h.NumCPUs),
@@ -188,7 +196,7 @@ func (h *hypervisorType) writeStats(tw *html.TableWriter) uint {
 }
 
 func (m *Manager) listHypervisors(topologyDir string, showFilter int,
-	subnetId string,
+	subnetId string, architectureType hyper_proto.ArchitectureType,
 	tagsToMatch *tagmatcher.TagMatcher) (hypervisorList, error) {
 	m.mutex.RLock()
 	defer m.mutex.RUnlock()
@@ -206,6 +214,10 @@ func (m *Manager) listHypervisors(topologyDir string, showFilter int,
 			}
 		}
 		hypervisor := m.hypervisors[machine.Hostname]
+		if architectureType != hyper_proto.ArchitectureTypeAuto &&
+			architectureType != hypervisor.ArchitectureType {
+			continue
+		}
 		if tagsToMatch != nil {
 			if !tagsToMatch.MatchEach(machine.Tags) &&
 				!tagsToMatch.MatchEach(hypervisor.localTags) {
@@ -214,24 +226,24 @@ func (m *Manager) listHypervisors(topologyDir string, showFilter int,
 		}
 		switch showFilter {
 		case showOK:
-			if hypervisor.probeStatus == probeStatusConnected &&
+			if hypervisor.ProbeStatus == fm_proto.ProbeStatusConnected &&
 				(hypervisor.healthStatus == "" ||
 					hypervisor.healthStatus == "healthy") {
 				hypervisors = append(hypervisors, hypervisor)
 			}
 		case showConnected:
-			if hypervisor.probeStatus == probeStatusConnected {
+			if hypervisor.ProbeStatus == fm_proto.ProbeStatusConnected {
 				hypervisors = append(hypervisors, hypervisor)
 			}
 		case showDisabled:
-			if hypervisor.probeStatus == probeStatusConnected &&
-				hypervisor.disabled {
+			if hypervisor.ProbeStatus == fm_proto.ProbeStatusConnected &&
+				hypervisor.Disabled {
 				hypervisors = append(hypervisors, hypervisor)
 			}
 		case showAll:
 			hypervisors = append(hypervisors, hypervisor)
 		case showOff:
-			if hypervisor.probeStatus == probeStatusOff {
+			if hypervisor.ProbeStatus == fm_proto.ProbeStatusOff {
 				hypervisors = append(hypervisors, hypervisor)
 			}
 		}
@@ -241,6 +253,17 @@ func (m *Manager) listHypervisors(topologyDir string, showFilter int,
 
 func (m *Manager) listHypervisorsHandler(w http.ResponseWriter,
 	req *http.Request) {
+	parsedQuery := url.ParseQuery(req.URL)
+	architecture := parsedQuery.Table["architecture"]
+	var architectureType hyper_proto.ArchitectureType
+	if architecture != "" {
+		if err := architectureType.Set(architecture); err != nil {
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprintf(w, "%s: %s\n", architecture, err)
+			return
+		}
+	}
 	writer := bufio.NewWriter(w)
 	defer writer.Flush()
 	_, err := m.getTopology()
@@ -248,7 +271,6 @@ func (m *Manager) listHypervisorsHandler(w http.ResponseWriter,
 		fmt.Fprintln(writer, err)
 		return
 	}
-	parsedQuery := url.ParseQuery(req.URL)
 	showFilter := showAll
 	switch parsedQuery.Table["state"] {
 	case "connected":
@@ -261,7 +283,8 @@ func (m *Manager) listHypervisorsHandler(w http.ResponseWriter,
 		showFilter = showOff
 	}
 	locationFilter := parsedQuery.Table["location"]
-	hypervisors, err := m.listHypervisors(locationFilter, showFilter, "", nil)
+	hypervisors, err := m.listHypervisors(locationFilter, showFilter, "",
+		architectureType, nil)
 	if err != nil {
 		fmt.Fprintln(writer, err)
 		return
@@ -282,8 +305,8 @@ func (m *Manager) listHypervisorsHandler(w http.ResponseWriter,
 	fmt.Fprintln(writer, "<body>")
 	fmt.Fprintln(writer, `<table border="1" style="width:100%">`)
 	tw, _ := html.NewTableWriter(writer, true,
-		"Name", "Status", "IP Addr", "Serial Number", "Location", "Type",
-		"CPUs", "RAM", "Storage", "NumVMs")
+		"Name", "Status", "IP Addr", "Serial Number", "Location",
+		"Architecture", "Type", "CPUs", "RAM", "Storage", "NumVMs")
 	var numVMs uint
 	for _, hypervisor := range hypervisors {
 		numVMs += hypervisor.writeStats(tw)
@@ -294,16 +317,17 @@ func (m *Manager) listHypervisorsHandler(w http.ResponseWriter,
 }
 
 func (m *Manager) listHypervisorsInLocation(
-	request proto.ListHypervisorsInLocationRequest) (
-	proto.ListHypervisorsInLocationResponse, error) {
+	request fm_proto.ListHypervisorsInLocationRequest) (
+	fm_proto.ListHypervisorsInLocationResponse, error) {
 	showFilter := showOK
 	if request.IncludeUnhealthy {
 		showFilter = showConnected
 	}
 	hypervisors, err := m.listHypervisors(request.Location, showFilter,
-		request.SubnetId, tagmatcher.New(request.HypervisorTagsToMatch, false))
+		request.SubnetId, request.ArchitectureType,
+		tagmatcher.New(request.HypervisorTagsToMatch, false))
 	if err != nil {
-		return proto.ListHypervisorsInLocationResponse{}, err
+		return fm_proto.ListHypervisorsInLocationResponse{}, err
 	}
 	addresses := make([]string, 0, len(hypervisors))
 	var tagsForHypervisors []tags.Tags
@@ -324,7 +348,7 @@ func (m *Manager) listHypervisorsInLocation(
 			tagsForHypervisors = append(tagsForHypervisors, hypervisorTags)
 		}
 	}
-	return proto.ListHypervisorsInLocationResponse{
+	return fm_proto.ListHypervisorsInLocationResponse{
 		HypervisorAddresses: addresses,
 		TagsForHypervisors:  tagsForHypervisors,
 	}, nil

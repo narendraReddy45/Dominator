@@ -2,9 +2,28 @@ package fleetmanager
 
 import (
 	"net"
+	"time"
 
 	"github.com/Cloud-Foundations/Dominator/lib/tags"
 	proto "github.com/Cloud-Foundations/Dominator/proto/hypervisor"
+)
+
+const (
+	AllocationRequestError         = AllocationDeletionReason(0)
+	AllocationRequestCompleted     = AllocationDeletionReason(1)
+	AllocationRequestCancelled     = AllocationDeletionReason(2)
+	AllocationRequestCannotFit     = AllocationDeletionReason(3)
+	AllocationRequestExpired       = AllocationDeletionReason(4)
+	AllocationRequestCreateTimeout = AllocationDeletionReason(5)
+
+	ProbeStatusNotYetProbed      = ProbeStatus(0)
+	ProbeStatusConnected         = ProbeStatus(1)
+	ProbeStatusAccessDenied      = ProbeStatus(2)
+	ProbeStatusNoSrpc            = ProbeStatus(3)
+	ProbeStatusNoService         = ProbeStatus(4)
+	ProbeStatusConnectionRefused = ProbeStatus(6)
+	ProbeStatusUnreachable       = ProbeStatus(7)
+	ProbeStatusOff               = ProbeStatus(8)
 )
 
 type ChangeMachineTagsRequest struct {
@@ -26,6 +45,7 @@ type GetHypervisorForVMResponse struct {
 }
 
 type GetHypervisorsInLocationRequest struct {
+	ArchitectureType      proto.ArchitectureType
 	HypervisorTagsToMatch tags.MatchTags // Empty: match all tags.
 	IncludeUnhealthy      bool
 	IncludeVMs            bool
@@ -49,7 +69,9 @@ type HypervisorData struct {
 	AllocatedMemory      uint64          `json:",omitempty"` // MiB.
 	AllocatedVolumeBytes uint64          `json:",omitempty"`
 	AvailableMemory      uint64          `json:",omitempty"` // MiB.
+	Disabled             bool            `json:",omitempty"`
 	NumFreeAddresses     map[string]uint `json:",omitempty"` // Key: subnet ID.
+	ProbeStatus          ProbeStatus     `json:",omitempty"`
 }
 
 type GetIpInfoRequest struct {
@@ -106,6 +128,7 @@ type ListHypervisorLocationsResponse struct {
 }
 
 type ListHypervisorsInLocationRequest struct {
+	ArchitectureType      proto.ArchitectureType
 	HypervisorTagsToMatch tags.MatchTags // Empty: match all tags.
 	IncludeUnhealthy      bool
 	Location              string
@@ -135,17 +158,22 @@ type ListVMsInLocationResponse struct {
 }
 
 type Machine struct {
+	MachineData
 	GatewaySubnetId         string       `json:",omitempty"`
 	IPMI                    NetworkEntry `json:",omitempty"`
 	Location                string       `json:",omitempty"`
-	MemoryInMiB             uint64       `json:",omitempty"`
 	NetworkEntry            `json:",omitempty"`
-	NumCPUs                 uint           `json:",omitempty"`
 	OwnerGroups             []string       `json:",omitempty"`
 	OwnerUsers              []string       `json:",omitempty"`
 	SecondaryNetworkEntries []NetworkEntry `json:",omitempty"`
 	Tags                    tags.Tags      `json:",omitempty"`
-	TotalVolumeBytes        uint64         `json:",omitempty"`
+}
+
+type MachineData struct {
+	ArchitectureType proto.ArchitectureType `json:",omitempty"`
+	MemoryInMiB      uint64                 `json:",omitempty"`
+	NumCPUs          uint                   `json:",omitempty"`
+	TotalVolumeBytes uint64                 `json:",omitempty"`
 }
 
 type MoveIpAddressesRequest struct {
@@ -171,4 +199,46 @@ type PowerOnMachineRequest struct {
 
 type PowerOnMachineResponse struct {
 	Error string
+}
+
+// The Allocation RPC is experimental and subject to change without notice.
+type AllocateRequest struct {
+	Deadline time.Time
+	// Placement
+	// Priority uint
+	VMs []VmAllocationSpecification
+}
+
+type AllocateResponse struct {
+	Error          string
+	RequestId      RequestId
+	UpdatePosition uint64
+}
+
+// The CancelAllocation RPC is experimental and subject to change without
+// notice.
+type CancelAllocationRequest struct {
+	RequestId RequestId
+}
+
+type CancelAllocationResponse struct {
+	Error string
+}
+
+// The GetAllocationUpdates() RPC is fully streamed.
+// The client sends a single GetAllocationUpdatesRequest message.
+// The server sends a stream of AllocationUpdate messages.
+// This RPC is experimental and subject to change without notice.
+
+type GetAllocationUpdatesRequest struct {
+	IncludeRequests bool      // If true: include original allocation requests.
+	Position        uint64    // The position of the first update to receive.
+	MaxUpdates      uint64    // Zero means infinite.
+	UntilRequestId  RequestId // Empty means infinite.
+}
+
+type AllocationUpdate struct {
+	AllocationUpdateEntry
+	Error    string `json:",omitempty"`
+	Position uint64
 }

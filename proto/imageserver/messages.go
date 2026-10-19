@@ -48,6 +48,14 @@ type CheckImageResponse struct {
 	ImageExists bool
 }
 
+type DeleteDirectoryRequest struct {
+	DirectoryName string
+}
+
+type DeleteDirectoryResponse struct {
+	Error string
+}
+
 type DeleteImageRequest struct {
 	ImageName string
 }
@@ -127,9 +135,10 @@ type GetImageResponse struct {
 }
 
 const (
-	OperationAddImage      = 0
-	OperationDeleteImage   = 1
-	OperationMakeDirectory = 2
+	OperationAddImage        = 0
+	OperationDeleteImage     = 1
+	OperationMakeDirectory   = 2
+	OperationDeleteDirectory = 3
 )
 
 // The GetImageUpdates() RPC is fully streamed.
@@ -153,10 +162,19 @@ type GetFilteredImageUpdatesRequest struct {
 	IgnoreExpiring bool
 }
 
-type ImageUpdate struct {
-	Name      string // "" signifies initial list is sent, changes to follow.
-	Directory *image.Directory
-	Operation uint
+type GetObjectStatisticsForImagesRequest struct {
+	IgnoreMissing bool
+	ImageNames    []string
+}
+
+type GetObjectStatisticsForImagesResponse struct {
+	ComputationTime     time.Duration
+	Error               string
+	NumFileInodes       uint64
+	NumImages           uint
+	NumObjects          uint64
+	TotalFileInodeBytes uint64
+	TotalObjectBytes    uint64
 }
 
 type GetReplicationMasterRequest struct{}
@@ -171,6 +189,29 @@ type ImageArchive struct {
 	image.Image
 } // HMAC-SHA512 checksum is written after GOB encoded data.
 
+type ImageUpdate struct {
+	Name      string // "" signifies initial list is sent, changes to follow.
+	Directory *image.Directory
+	Operation uint
+}
+
+type ImportTreeRequest struct {
+	DirectoryName string
+	ExpiresAt     time.Time
+	TreeUrl       string
+}
+
+type ImportTreeResponse struct {
+	FileBytesAdded    uint64
+	FileObjectsAdded  uint64
+	FilesDownloadTime time.Duration
+	Error             string
+	ImageName         string
+	TreeBytesAdded    uint64
+	TreeObjectsAdded  uint64
+	TreesDownloadTime time.Duration
+}
+
 // The ListDirectories() RPC is fully streamed.
 // The client sends no information to the server.
 // The server sends a stream of image.Directory values with an empty string
@@ -182,6 +223,10 @@ type ImageArchive struct {
 // signifying the end of the list.
 
 type ListSelectedImagesRequest struct {
+	// Empty or ".": all images.
+	// Trailing "/": images in the directory only.
+	// otherwise the directory subtree.
+	DirectoryName        string
 	IgnoreExpiringImages bool
 	TagsToMatch          tags.MatchTags // Empty: match all tags.
 }
