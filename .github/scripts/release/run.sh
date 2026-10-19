@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euxo pipefail # -x: full command trace in the log
+set -euo pipefail
 dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$dir/constants.sh"
 source "$dir/package.sh"
