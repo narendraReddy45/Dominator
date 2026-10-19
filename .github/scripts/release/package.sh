@@ -18,7 +18,6 @@ collect_client_binaries() {
 }
 
 package_dist() {
-  cp lib/version/BUILD_INFO "$DIST_DIR/BUILD_INFO"
   find "$DIST_DIR" -type f | sort
 }
 
@@ -35,15 +34,21 @@ build_linux() {
 }
 
 # Servers don't compile on darwin, so only CLIENTS are built.
+# TODO: switch to `make build-darwin` once it succeeds for all cmd/*, same as build_linux uses `make all`.
 build_darwin() {
-  make generate # //go:embed needs BUILD_INFO before go build
-  local out="/tmp/${LOGNAME:-runner}-darwin" targets=() name
+  local out="/tmp/${LOGNAME:-runner}-darwin" targets=() name ldflags
+  # Version link flags come from the Makefile, so darwin binaries match linux.
+  ldflags="$(make -s -f Makefile -f - print-GO_LDFLAGS <<'EOF'
+print-%:
+	@echo '$($*)'
+EOF
+)"
   mkdir -p "$out"
   for name in "${CLIENTS[@]}"; do
     targets+=("./cmd/$name")
   done
   # Trailing slash on -o: multi-package go build discards binaries without it.
-  CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=true -o "$out/" "${targets[@]}"
+  CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -buildvcs=true -ldflags "$ldflags" -o "$out/" "${targets[@]}"
   collect_client_binaries "$out" darwin-arm64
   package_dist
 }
